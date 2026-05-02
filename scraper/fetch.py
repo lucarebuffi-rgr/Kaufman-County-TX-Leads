@@ -252,36 +252,38 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str) -> li
 
 async def scrape_all(date_from: str, date_to: str) -> list:
     all_records = []
+    base = "https://kaufmancountytx-web.tylerhost.net"
     async with httpx.AsyncClient(
         follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": BASE_URL,
+        },
         timeout=60
     ) as client:
+        # Accept disclaimer
         await client.get(BASE_URL)
         await client.post(
-            "https://kaufmancountytx-web.tylerhost.net/web/user/disclaimer",
+            f"{base}/web/user/disclaimer",
             data={"disclaimer": "accept", "submit": "Accept"}
         )
+        log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        # Load the main JS file that handles search
-        r = await client.get(BASE_URL)
+        # Get document types to confirm correct names
+        dt_resp = await client.get(f"{base}/web/search/documentTypes/DOCSEARCH1008S7")
+        log.info(f"  Doc types: {dt_resp.status_code} snippet={dt_resp.text[:500]}")
 
-        # Find all web/ URLs in the page source
-        all_urls = re.findall(r'["\'](/web/[^"\'?\s]+)["\']', r.text)
-        unique_urls = sorted(set(all_urls))
-        log.info(f"  All web URLs: {unique_urls}")
-
-        # Load the self.service JS file which contains API endpoints
-        js_url = "https://kaufmancountytx-web.tylerhost.net/web/controller/js/self.service.2025-1-22.js"
-        js_r = await client.get(js_url)
-        log.info(f"  JS file: {js_r.status_code} len={len(js_r.text)}")
-
-        # Find all fetch/ajax/url patterns in JS
-        api_paths = re.findall(r'["\'](/web/[^"\']+)["\']', js_r.text)
-        unique_api = sorted(set(api_paths))
-        log.info(f"  API paths in JS: {unique_api[:50]}")
-
-    return all_records
+        for doc_type, (cat, cat_label) in DOC_TYPES.items():
+            try:
+                # POST search
+                search_resp = await client.post(
+                    f"{base}/web/searchPost/DOCSEARCH1008S7",
+                    json={
+                        "field_RecDateID_DOT_StartDate": date_from,
+                        "field_RecDateID_DOT_EndDate":   date_to,
 
 
 def generate_demo_records(date_from: str, date_to: str) -> list:
