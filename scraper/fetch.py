@@ -254,76 +254,33 @@ async def scrape_all(date_from: str, date_to: str) -> list:
     all_records = []
     async with httpx.AsyncClient(
         follow_redirects=True,
-        headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With": "XMLHttpRequest",
-            "Content-Type": "application/json",
-        },
+        headers={"User-Agent": "Mozilla/5.0"},
         timeout=60
     ) as client:
-        # Accept disclaimer
         await client.get(BASE_URL)
         await client.post(
             "https://kaufmancountytx-web.tylerhost.net/web/user/disclaimer",
             data={"disclaimer": "accept", "submit": "Accept"}
         )
-        log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        for doc_type, (cat, cat_label) in DOC_TYPES.items():
-            try:
-                payload = {
-                    "formatType": "DOCSEARCH1008S7",
-                    "searchCriteria": {
-                        "field_RecDateID_DOT_StartDate": date_from,
-                        "field_RecDateID_DOT_EndDate":   date_to,
-                        "field_DocTypeID":               [doc_type],
-                    },
-                    "sortBy":    "field_RecDateID DESC",
-                    "pageSize":  250,
-                    "pageIndex": 0,
-                }
-                resp = await client.post(
-                    "https://kaufmancountytx-web.tylerhost.net/web/search/DOCSEARCH1008S7/results",
-                    json=payload
-                )
-                log.info(f"  {doc_type}: {resp.status_code} len={len(resp.text)}")
-                log.info(f"  Snippet: {resp.text[:500]}")
+        # Load the main JS file that handles search
+        r = await client.get(BASE_URL)
 
-                if resp.status_code == 200:
-                    try:
-                        data = resp.json()
-                        results = data.get("results", data.get("records", data.get("data", [])))
-                        log.info(f"  JSON keys: {list(data.keys()) if isinstance(data, dict) else 'list'}")
-                        log.info(f"  Results count: {len(results)}")
-                        for item in results:
-                            instrument = item.get("instrumentNumber", item.get("docNumber", item.get("id", "")))
-                            filed      = item.get("recordingDate", item.get("filedDate", ""))
-                            grantor    = item.get("grantor", item.get("grantorName", ""))
-                            grantee    = item.get("grantee", item.get("granteeName", ""))
-                            if not instrument:
-                                continue
-                            all_records.append({
-                                "doc_num"  : str(instrument),
-                                "doc_type" : doc_type,
-                                "cat"      : cat,
-                                "cat_label": cat_label,
-                                "filed"    : parse_date(str(filed)) or str(filed),
-                                "grantor"  : str(grantor),
-                                "grantee"  : str(grantee),
-                                "legal"    : "",
-                                "amount"   : None,
-                                "clerk_url": BASE_URL,
-                                "_demo"    : False,
-                            })
-                    except Exception:
-                        log.info(f"  Not JSON: {resp.text[:200]}")
+        # Find all web/ URLs in the page source
+        all_urls = re.findall(r'["\'](/web/[^"\'?\s]+)["\']', r.text)
+        unique_urls = sorted(set(all_urls))
+        log.info(f"  All web URLs: {unique_urls}")
 
-            except Exception as e:
-                log.warning(f"  {doc_type} failed: {e}")
+        # Load the self.service JS file which contains API endpoints
+        js_url = "https://kaufmancountytx-web.tylerhost.net/web/controller/js/self.service.2025-1-22.js"
+        js_r = await client.get(js_url)
+        log.info(f"  JS file: {js_r.status_code} len={len(js_r.text)}")
 
-        log.info(f"  Total scraped: {len(all_records)}")
+        # Find all fetch/ajax/url patterns in JS
+        api_paths = re.findall(r'["\'](/web/[^"\']+)["\']', js_r.text)
+        unique_api = sorted(set(api_paths))
+        log.info(f"  API paths in JS: {unique_api[:50]}")
+
     return all_records
 
 
