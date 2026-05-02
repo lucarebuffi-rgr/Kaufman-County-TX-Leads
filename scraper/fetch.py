@@ -208,7 +208,13 @@ async def scrape_all(date_from: str, date_to: str) -> list:
     all_records = []
     async with httpx.AsyncClient(
         follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": BASE_URL,
+        },
         timeout=60
     ) as client:
         # Accept disclaimer
@@ -217,32 +223,43 @@ async def scrape_all(date_from: str, date_to: str) -> list:
             BASE_HOST + "/web/user/disclaimer",
             data={"disclaimer": "accept", "submit": "Accept"}
         )
+        log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        # Load search page
-        r = await client.get(BASE_URL)
+        for doc_type, (cat, cat_label) in DOC_TYPES.items():
+            try:
+                payload = {
+                    "field_RecDateID_DOT_StartDate": date_from,
+                    "field_RecDateID_DOT_EndDate":   date_to,
+                    "field_selfservice_documentTypes": doc_type,
+                }
+                resp = await client.post(
+                    BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
+                    json=payload
+                )
+                log.info(f"  {doc_type}: {resp.status_code} response={resp.text[:300]}")
 
-        # Find all hidden inputs and data attributes
-        hidden = dict(re.findall(
-            r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']',
-            r.text, re.I
-        ))
-        log.info(f"  Hidden inputs: {hidden}")
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                        total = data.get("totalPages", 0)
+                        log.info(f"  totalPages={total} keys={list(data.keys())}")
 
-        # Find data-url or data-ajax attributes
-        data_attrs = re.findall(r'data-(?:url|ajax|post|action)=["\']([^"\']+)["\']', r.text, re.I)
-        log.info(f"  Data attrs: {data_attrs[:20]}")
+                        # Get results if search succeeded
+                        if total > 0 or "results" in data or "searchResults" in data:
+                            results_resp = await client.get(
+                                BASE_HOST + "/web/searchResults/DOCSEARCH1008S7"
+                            )
+                            log.info(f"  Results: {results_resp.status_code} len={len(results_resp.text)}")
+                            log.info(f"  Results snippet: {results_resp.text[:500]}")
+                    except Exception:
+                        pass
 
-        # Find any JSON config objects in the page
-        json_configs = re.findall(r'var\s+\w+\s*=\s*(\{[^;]{20,200}\})', r.text)
-        log.info(f"  JS configs: {json_configs[:5]}")
+                # Only test first 2 for now
+                if list(DOC_TYPES.keys()).index(doc_type) >= 1:
+                    break
 
-        # Find the searchPost call in JS
-        search_calls = re.findall(r'searchPost[^;]{0,200}', r.text)
-        log.info(f"  searchPost calls: {search_calls[:3]}")
-
-        # Check the full search page for field names
-        field_names = re.findall(r'field_\w+', r.text)
-        log.info(f"  Field names in page: {sorted(set(field_names))}")
+            except Exception as e:
+                log.warning(f"  {doc_type} failed: {e}")
 
     return all_records
 
