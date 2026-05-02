@@ -257,7 +257,9 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         headers={
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/json",
         },
         timeout=60
     ) as client:
@@ -269,26 +271,59 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         )
         log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        # Load search page and find AJAX endpoints
-        r = await client.get(BASE_URL)
-        log.info(f"  Search page: {r.status_code} len={len(r.text)}")
+        for doc_type, (cat, cat_label) in DOC_TYPES.items():
+            try:
+                payload = {
+                    "formatType": "DOCSEARCH1008S7",
+                    "searchCriteria": {
+                        "field_RecDateID_DOT_StartDate": date_from,
+                        "field_RecDateID_DOT_EndDate":   date_to,
+                        "field_DocTypeID":               [doc_type],
+                    },
+                    "sortBy":    "field_RecDateID DESC",
+                    "pageSize":  250,
+                    "pageIndex": 0,
+                }
+                resp = await client.post(
+                    "https://kaufmancountytx-web.tylerhost.net/web/search/DOCSEARCH1008S7/results",
+                    json=payload
+                )
+                log.info(f"  {doc_type}: {resp.status_code} len={len(resp.text)}")
+                log.info(f"  Snippet: {resp.text[:500]}")
 
-        # Search for API endpoints in the JavaScript
-        ajax_urls = re.findall(r'["\'](/web/[^"\']+(?:search|result|query|api)[^"\']*)["\']', r.text, re.I)
-        log.info(f"  AJAX URLs found: {ajax_urls[:20]}")
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                        results = data.get("results", data.get("records", data.get("data", [])))
+                        log.info(f"  JSON keys: {list(data.keys()) if isinstance(data, dict) else 'list'}")
+                        log.info(f"  Results count: {len(results)}")
+                        for item in results:
+                            instrument = item.get("instrumentNumber", item.get("docNumber", item.get("id", "")))
+                            filed      = item.get("recordingDate", item.get("filedDate", ""))
+                            grantor    = item.get("grantor", item.get("grantorName", ""))
+                            grantee    = item.get("grantee", item.get("granteeName", ""))
+                            if not instrument:
+                                continue
+                            all_records.append({
+                                "doc_num"  : str(instrument),
+                                "doc_type" : doc_type,
+                                "cat"      : cat,
+                                "cat_label": cat_label,
+                                "filed"    : parse_date(str(filed)) or str(filed),
+                                "grantor"  : str(grantor),
+                                "grantee"  : str(grantee),
+                                "legal"    : "",
+                                "amount"   : None,
+                                "clerk_url": BASE_URL,
+                                "_demo"    : False,
+                            })
+                    except Exception:
+                        log.info(f"  Not JSON: {resp.text[:200]}")
 
-        # Look for controller/action patterns
-        controllers = re.findall(r'controller["\s:=]+["\']([^"\']+)["\']', r.text, re.I)
-        log.info(f"  Controllers: {controllers[:10]}")
+            except Exception as e:
+                log.warning(f"  {doc_type} failed: {e}")
 
-        # Look for the search form action
-        form_actions = re.findall(r'<form[^>]+action=["\']([^"\']+)["\']', r.text, re.I)
-        log.info(f"  Form actions: {form_actions}")
-
-        # Log a bigger chunk of the page to find the search logic
-        log.info(f"  Page 10000-11000: {r.text[10000:11000]}")
-        log.info(f"  Page 20000-21000: {r.text[20000:21000]}")
-
+        log.info(f"  Total scraped: {len(all_records)}")
     return all_records
 
 
