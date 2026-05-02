@@ -247,21 +247,11 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         date_inputs = await page.query_selector_all('input[placeholder="mm/dd/yyyy"]')
         log.info(f"  Found {len(date_inputs)} date inputs")
         if len(date_inputs) >= 1:
-            await date_inputs[0].click()
-            await date_inputs[0].triple_click()
-            await date_inputs[0].fill(date_from)
-            await page.wait_for_timeout(300)
-            await date_inputs[0].press("Tab")
-            val0 = await date_inputs[0].input_value()
-            log.info(f"  Date from: '{val0}'")
-        if len(date_inputs) >= 2:
-            await date_inputs[1].click()
-            await date_inputs[1].triple_click()
-            await date_inputs[1].fill(date_to)
-            await page.wait_for_timeout(300)
-            await date_inputs[1].press("Tab")
-            val1 = await date_inputs[1].input_value()
-            log.info(f"  Date to: '{val1}'")
+    await date_inputs[0].click()
+    await date_inputs[0].fill(date_from)
+    await page.wait_for_timeout(300)
+    await date_inputs[0].press("Tab")
+    val0 = await date_inputs[0].input_value()
 
         # Select doc type from list
         option = page.locator(f'text="{doc_type}"').first
