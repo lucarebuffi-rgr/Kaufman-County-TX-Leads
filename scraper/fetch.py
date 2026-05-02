@@ -238,57 +238,201 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         await accept_disclaimer(page)
         await page.wait_for_timeout(3000)
 
-        # Use JavaScript to set date values directly and trigger change events
+        # Set dates via JavaScript
         await page.evaluate(f"""
             () => {{
                 const startEl = document.getElementById('field_RecDateID_DOT_StartDate');
-                const endEl = document.getElementById('field_RecDateID_DOT_EndDate');
+                const endEl   = document.getElementById('field_RecDateID_DOT_EndDate');
                 if (startEl) {{
                     startEl.value = '{date_from}';
                     startEl.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    startEl.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    startEl.dispatchEvent(new Event('input',  {{bubbles: true}}));
                 }}
                 if (endEl) {{
                     endEl.value = '{date_to}';
                     endEl.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    endEl.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    endEl.dispatchEvent(new Event('input',  {{bubbles: true}}));
                 }}
             }}
         """)
         await page.wait_for_timeout(500)
-
-        # Verify dates were set
         val_start = await page.evaluate("document.getElementById('field_RecDateID_DOT_StartDate')?.value || ''")
         val_end   = await page.evaluate("document.getElementById('field_RecDateID_DOT_EndDate')?.value || ''")
         log.info(f"  Dates set: {val_start} → {val_end}")
 
-        # Find the document type section - look for any element containing doc type text
-        # jQuery Mobile uses li elements in a listview
+        # Expand Document Types collapsible panel
+        expanded = await page.evaluate("""
+            () => {
+                const headers = document.querySelectorAll(
+                    'h1, h2, h3, h4, [data-role="collapsible"] h1, [data-role="collapsible"] h2, [data-role="collapsible"] h3'
+                );
+                for (const h of headers) {
+                    if (h.textContent.includes('Document')) {
+                        h.click();
+                        return 'clicked header: ' + h.textContent.trim().substring(0, 50);
+                    }
+                }
+                const collapsibles = document.querySelectorAll('[data-role="collapsible"]');
+                const texts = Array.from(collapsibles).map(c => c.textContent.trim().substring(0, 40));
+                return 'no header found. collapsibles: ' + JSON.stringify(texts);
+            }
+        """)
+        log.info(f"  Expand result: {expanded}")
+        await page.wait_for_timeout(1000)
+
+        # Find and click the doc type
         found = await page.evaluate(f"""
             () => {{
-                // Try to find and click doc type in any list
-                const allElements = document.querySelectorAll('li, label, a, span, div');
+                const allElements = document.querySelectorAll('li, label, a, span');
                 for (const el of allElements) {{
                     if (el.textContent.trim() === '{doc_type}') {{
                         el.click();
-                        return 'clicked:' + el.tagName + ':' + el.className;
+                        return 'clicked: ' + el.tagName + ' class=' + el.className;
                     }}
                 }}
-                // Log all li text content for debugging
                 const lis = document.querySelectorAll('li');
-                const texts = Array.from(lis).map(li => li.textContent.trim().substring(0, 50));
-                return 'not_found. li texts: ' + JSON.stringify(texts.slice(0, 20));
+                const texts = Array.from(lis).map(li => li.textContent.trim().substring(0, 60));
+                return 'not_found. lis: ' + JSON.stringify(texts.slice(0, 30));
             }}
         """)
-        log.info(f"  Doc type search result: {found}")
+        log.info(f"  Doc type result: {found}")
 
-        log.info(f"  {doc_type}: 0 rows (debug)")
+        if "not_found" in found:
+            await page.close()
+            await context.close()
+            return records
+
+        await page.wait_for_timeout(500)
+
+        # Click Search via JavaScript
+        clicked = await page.evaluate("""
+            () => {
+                const btns = document.querySelectorAll('button, input[type=submit], input[type=button], a');
+                for (const btn of btns) {
+                    const txt = (btn.textContent || btn.value || '').trim();
+                    if (txt === 'Search') {
+                        btn.click();
+                        return true;
+                    }
+                }
+                // Log all button texts
+                const allBtns = Array.from(document.querySelectorAll('button, input[type=submit], a[data-role=button]'));
+                return 'not found. buttons: ' + JSON.stringify(allBtns.map(b => (b.textContent || b.value || '').trim().substring(0, 30)));
+            }
+        """)
+        log.info(f"  Search clicked: {clicked}")
+
+        if clicked is not True:
+            await page.close()
+            await context.close()
+            return records
+
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(3000)
+
+        # Parse pages
+        page_num = 1
+        while True:
+            await page.wait_for_timeout(1000)
+            content = await page.content()
+
+            if "No results" in content or "0 Total Results" in content:
+                log.info(f"  {doc_type}: 0 results")
+                break
+
+            try:
+                total_el = await page.query_selector(
+                    '[class*="total"], [class*="count"], [class*="showing"]'
+                )
+                if total_el:
+                    log.info(f"  {doc_type} p{page_num}: {await total_el.inner_text()}")
+            except Exception:
+                pass
+
+            rows = await page.query_selector_all(
+                '.document-row, [class*="document-row"], [class*="result-item"]'
+            )
+            if not rows:
+                rows = await page.query_selector_all('tbody tr')
+            if not rows:
+                log.info(f"  {doc_type} p{page_num}: no rows, snippet={content[1500:2000]}")
+                break
+
+            for row in rows:
+                try:
+                    text  = await row.inner_text()
+                    lines = [l.strip() for l in text.split("\n") if l.strip()]
+
+                    instrument = ""
+                    filed      = ""
+                    grantor    = ""
+                    grantee    = ""
+
+                    for line in lines:
+                        m = re.match(r"(\d{4}-\d+)", line)
+                        if m and not instrument:
+                            instrument = m.group(1)
+                        m2 = re.match(r"(\d{2}/\d{2}/\d{4})", line)
+                        if m2 and not filed:
+                            filed = m2.group(1)
+
+                    for sel, attr in [('[class*="grantor"]', "grantor"),
+                                      ('[class*="grantee"]', "grantee")]:
+                        el = await row.query_selector(sel)
+                        if el:
+                            val = (await el.inner_text()).strip()
+                            if attr == "grantor":
+                                grantor = val
+                            else:
+                                grantee = val
+
+                    if not grantor and not grantee:
+                        for i, line in enumerate(lines):
+                            if re.match(r"\d{2}/\d{2}/\d{4}", line):
+                                if i + 1 < len(lines) and len(lines[i+1]) > 2:
+                                    grantor = lines[i + 1]
+                                if i + 2 < len(lines) and len(lines[i+2]) > 2:
+                                    grantee = lines[i + 2]
+                                break
+
+                    if not instrument:
+                        continue
+
+                    records.append({
+                        "doc_num"  : instrument,
+                        "doc_type" : doc_type,
+                        "cat"      : cat,
+                        "cat_label": cat_label,
+                        "filed"    : parse_date(filed) or filed,
+                        "grantor"  : grantor,
+                        "grantee"  : grantee,
+                        "legal"    : "",
+                        "amount"   : None,
+                        "clerk_url": BASE_URL,
+                        "_demo"    : False,
+                    })
+                except Exception:
+                    continue
+
+            log.info(f"  {doc_type} p{page_num}: {len(records)} records so far")
+
+            next_btn = page.locator(
+                'button:has-text("Next"), [aria-label="Next"], [aria-label="Next page"]'
+            ).first
+            if await next_btn.count() > 0 and await next_btn.is_enabled():
+                await next_btn.click()
+                await page.wait_for_load_state("networkidle")
+                page_num += 1
+            else:
+                break
+
     except Exception as e:
         log.warning(f"  Error {doc_type}: {e}\n{traceback.format_exc()}")
     finally:
         await page.close()
         await context.close()
 
+    log.info(f"  {doc_type} total: {len(records)}")
     return records
 
 
