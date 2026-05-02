@@ -28,7 +28,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright httpx
+          pip install playwright httpx beautifulsoup4
           playwright install chromium
           playwright install-deps chromium
 
