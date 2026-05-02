@@ -232,7 +232,6 @@ async def parse_result_rows(page, doc_type, cat, cat_label) -> list:
         '[class*="searchResult"], [class*="search-result"], '
         'li[class*="ss-"], tbody tr'
     )
-    log.info(f"  {doc_type}: {len(rows)} rows found")
     for row in rows:
         try:
             text  = await row.inner_text()
@@ -300,6 +299,8 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         await page.wait_for_timeout(2000)
 
         doc_type_escaped = doc_type.replace("'", "\\'")
+
+        # Fire AJAX search and stay on same page
         result = await page.evaluate(f"""
             () => new Promise((resolve) => {{
                 const payload = {{
@@ -328,30 +329,24 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
             }})
         """)
         log.info(f"  {doc_type} ajax: {result}")
-        await page.wait_for_timeout(2000)
 
-        # Navigate to results page
-        await page.goto(
-            BASE_HOST + "/web/searchResults/DOCSEARCH1008S7",
-            timeout=30_000, wait_until="networkidle"
-        )
-        await page.wait_for_timeout(2000)
+        # Wait for DOM to update with results
+        await page.wait_for_timeout(3000)
+
+        # Log body text to understand what the page shows now
+        body_text = await page.evaluate("document.body.innerText")
+        log.info(f"  {doc_type} body after ajax: {body_text[:2000]}")
 
         content = await page.content()
-        log.info(f"  {doc_type} results: len={len(content)}")
+        log.info(f"  {doc_type} page len={len(content)} url={page.url}")
 
-        # Log body text to understand structure — only for first doc type
-        if doc_type == "LIS PENDENS":
-            body_text = await page.evaluate("document.body.innerText")
-            log.info(f"  Body text: {body_text[:3000]}")
-
-        if "No results" in content or "0 results" in content.lower():
+        if "No results" in content or "0 results" in body_text.lower():
             log.info(f"  {doc_type}: 0 results")
             return records
 
         recs = await parse_result_rows(page, doc_type, cat, cat_label)
+        log.info(f"  {doc_type}: {len(recs)} rows found")
         records.extend(recs)
-        log.info(f"  {doc_type}: {len(records)} records parsed")
 
         # Next pages
         while True:
