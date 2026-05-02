@@ -153,7 +153,6 @@ def build_parcel_lookup() -> dict:
                          headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         log.info(f"  Downloaded {len(resp.content)/1_048_576:.1f} MB")
-
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
         fname = next(
             (n for n in zf.namelist()
@@ -169,11 +168,9 @@ def build_parcel_lookup() -> dict:
         if not fname:
             log.error(f"Could not find data file. Files: {zf.namelist()}")
             return lookup
-
         log.info(f"  Parsing {fname} ...")
         raw   = zf.read(fname).decode("latin-1")
         total = 0
-
         for line in raw.splitlines():
             if len(line) < PCLS_E:
                 continue
@@ -191,7 +188,6 @@ def build_parcel_lookup() -> dict:
             situs_st   = f"{situs_num} {line[SITUS_S:SITUS_E].strip()}".strip()
             situs_city = line[SCITY_S:SCITY_E].strip()
             situs_zip  = line[SZIP_S:SZIP_E].strip()[:5]
-
             parcel = {
                 "prop_address": situs_st,
                 "prop_city":    situs_city or "Kaufman",
@@ -207,7 +203,6 @@ def build_parcel_lookup() -> dict:
             total += 1
             if total % 10000 == 0:
                 log.info(f"  Processed {total:,} parcels ...")
-
         log.info(f"Kaufman CAD lookup: {len(lookup):,} name variants from {total:,} parcels")
     except Exception:
         log.error(f"CAD lookup error:\n{traceback.format_exc()}")
@@ -247,16 +242,26 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         date_inputs = await page.query_selector_all('input[placeholder="mm/dd/yyyy"]')
         log.info(f"  Found {len(date_inputs)} date inputs")
         if len(date_inputs) >= 1:
-    await date_inputs[0].click()
-    await date_inputs[0].fill(date_from)
-    await page.wait_for_timeout(300)
-    await date_inputs[0].press("Tab")
-    val0 = await date_inputs[0].input_value()
+            await date_inputs[0].click()
+            await date_inputs[0].fill(date_from)
+            await page.wait_for_timeout(300)
+            await date_inputs[0].press("Tab")
+            val0 = await date_inputs[0].get_attribute("value") or ""
+            log.info(f"  Date from: '{val0}'")
+        if len(date_inputs) >= 2:
+            await date_inputs[1].click()
+            await date_inputs[1].fill(date_to)
+            await page.wait_for_timeout(300)
+            await date_inputs[1].press("Tab")
+            val1 = await date_inputs[1].get_attribute("value") or ""
+            log.info(f"  Date to: '{val1}'")
 
-        # Select doc type from list
+        # Select doc type
         option = page.locator(f'text="{doc_type}"').first
         if await option.count() == 0:
-            option = page.locator(f'li:has-text("{doc_type}"), div:has-text("{doc_type}"), label:has-text("{doc_type}")').first
+            option = page.locator(
+                f'li:has-text("{doc_type}"), div:has-text("{doc_type}"), label:has-text("{doc_type}")'
+            ).first
 
         if await option.count() > 0:
             await option.scroll_into_view_if_needed()
@@ -264,8 +269,9 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
             log.info(f"  Selected: {doc_type}")
             await page.wait_for_timeout(500)
         else:
-            # Try search box
-            search_input = page.locator('input[placeholder*="Search"], input[placeholder*="search"]').first
+            search_input = page.locator(
+                'input[placeholder*="Search"], input[placeholder*="search"]'
+            ).first
             if await search_input.count() > 0:
                 await search_input.fill(doc_type[:8])
                 await page.wait_for_timeout(800)
@@ -280,12 +286,12 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                     await context.close()
                     return records
             else:
-                log.warning(f"  Could not find doc type or search box: {doc_type}")
+                log.warning(f"  Could not find doc type: {doc_type}")
                 await page.close()
                 await context.close()
                 return records
 
-        # Click Search using JavaScript
+        # Click Search via JavaScript
         await page.wait_for_timeout(500)
         clicked = await page.evaluate("""
             () => {
@@ -299,7 +305,7 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                 return false;
             }
         """)
-        log.info(f"  Search button clicked: {clicked}")
+        log.info(f"  Search clicked: {clicked}")
         if not clicked:
             log.warning(f"  Search button not found for {doc_type}")
             await page.close()
@@ -319,16 +325,18 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                 log.info(f"  {doc_type}: 0 results")
                 break
 
-            # Log total
             try:
-                total_el = await page.query_selector('[class*="total"], [class*="count"], [class*="showing"]')
+                total_el = await page.query_selector(
+                    '[class*="total"], [class*="count"], [class*="showing"]'
+                )
                 if total_el:
                     log.info(f"  {doc_type} p{page_num}: {await total_el.inner_text()}")
             except Exception:
                 pass
 
-            # Get rows
-            rows = await page.query_selector_all('.document-row, [class*="document-row"], [class*="result-item"]')
+            rows = await page.query_selector_all(
+                '.document-row, [class*="document-row"], [class*="result-item"]'
+            )
             if not rows:
                 rows = await page.query_selector_all('tbody tr')
             if not rows:
@@ -339,7 +347,6 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                 try:
                     text = await row.inner_text()
                     lines = [l.strip() for l in text.split("\n") if l.strip()]
-
                     instrument = ""
                     filed      = ""
                     grantor    = ""
@@ -353,7 +360,6 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                         if m2 and not filed:
                             filed = m2.group(1)
 
-                    # Try labeled elements
                     for sel, attr in [('[class*="grantor"]', "grantor"),
                                       ('[class*="grantee"]', "grantee")]:
                         el = await row.query_selector(sel)
@@ -364,7 +370,6 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                             else:
                                 grantee = val
 
-                    # Parse from text if needed
                     if not grantor and not grantee:
                         for i, line in enumerate(lines):
                             if re.match(r"\d{2}/\d{2}/\d{4}", line):
@@ -395,8 +400,9 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
 
             log.info(f"  {doc_type} p{page_num}: {len(records)} records so far")
 
-            # Next page
-            next_btn = page.locator('button:has-text("Next"), [aria-label="Next"], [aria-label="Next page"]').first
+            next_btn = page.locator(
+                'button:has-text("Next"), [aria-label="Next"], [aria-label="Next page"]'
+            ).first
             if await next_btn.count() > 0 and await next_btn.is_enabled():
                 await next_btn.click()
                 await page.wait_for_load_state("networkidle")
@@ -482,14 +488,12 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
         if last and key not in seen:
             seen.add(key)
             fuzzy_index.append((last, firsts, parcel))
-
     matched = 0
     for rec in records:
         dtype  = rec.get("doc_type", "")
         owner  = (rec.get("grantee") if dtype in GRANTEE_IS_OWNER
                   else rec.get("grantor") or "").upper().strip()
         parcel = None
-
         if is_entity(owner):
             rec.setdefault("prop_address", "")
             rec.setdefault("prop_city",    "")
@@ -500,12 +504,10 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
             rec.setdefault("mail_state",   "TX")
             rec.setdefault("mail_zip",     "")
             continue
-
         for variant in name_variants(owner):
             parcel = lookup.get(variant)
             if parcel:
                 break
-
         if not parcel and owner:
             o_last, o_firsts = normalize_for_fuzzy(owner)
             if o_last and o_firsts:
@@ -523,7 +525,6 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
                             None, o_str, c_str).ratio() >= 0.85:
                         parcel = candidate
                         break
-
         if parcel:
             rec.update(parcel)
             matched += 1
@@ -536,7 +537,6 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
             rec.setdefault("mail_city",    "")
             rec.setdefault("mail_state",   "TX")
             rec.setdefault("mail_zip",     "")
-
     log.info(f"Parcel enrichment: {matched}/{len(records)} records matched")
     return records
 
@@ -546,7 +546,6 @@ def score_record(rec: dict) -> tuple:
     flags = []
     dtype  = rec.get("doc_type", "")
     amount = rec.get("amount") or 0
-
     if dtype == "LIS PENDENS":                               flags.append("Lis pendens")
     if dtype in ("FEDERAL TAX LIEN", "STATE TAX LIEN"):      flags.append("Tax lien")
     if dtype in ("JUDGMENT", "ABSTRACT OF JUDGMENT"):        flags.append("Judgment lien")
@@ -557,14 +556,12 @@ def score_record(rec: dict) -> tuple:
     if dtype == "CHILD SUPPORT LIEN":                        flags.append("Child support lien")
     if dtype == "ASSESSMENT LIEN BY HOMEOWNERS ASSOCIATION": flags.append("HOA lien")
     if dtype == "DIVORCE PROCEEDINGS, CERTIFIED COPY":       flags.append("Divorce")
-
     try:
         filed = datetime.strptime(rec.get("filed", ""), "%Y-%m-%d")
         if (datetime.today() - filed).days <= 14:
             flags.append("New this week")
     except Exception:
         pass
-
     has_addr = bool(rec.get("prop_address") or rec.get("mail_address"))
     score += 10 * len(flags)
     if "Lis pendens" in flags:      score += 20
@@ -587,7 +584,6 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
                 continue
             if doc_num:
                 seen_docs.add(doc_num)
-
             dtype = raw.get("doc_type", "")
             if dtype in GRANTEE_IS_OWNER:
                 owner   = raw.get("grantee", "")
@@ -595,12 +591,9 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
             else:
                 owner   = raw.get("grantor", "")
                 grantee = raw.get("grantee", "")
-
             if not owner:
                 continue
-
             score, flags = score_record({**raw, "owner": owner})
-
             out_records.append({
                 "doc_num":      doc_num,
                 "doc_type":     dtype,
@@ -626,14 +619,12 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
             })
         except Exception:
             log.warning(f"Skipping: {traceback.format_exc()}")
-
     out_records = [r for r in out_records if not is_entity(r.get("owner", ""))]
     out_records = [r for r in out_records if not any(
         x in (r.get("owner", "")).upper() for x in ENTITY_FILTERS
     )]
     out_records.sort(key=lambda r: (-r["score"], r.get("filed", "") or ""))
     with_address = sum(1 for r in out_records if r["prop_address"] or r["mail_address"])
-
     return {
         "fetched_at":   datetime.utcnow().isoformat() + "Z",
         "source":       "Kaufman County TX – Tyler Technologies",
