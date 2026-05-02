@@ -155,23 +155,19 @@ def build_parcel_lookup() -> dict:
         log.info(f"  Downloaded {len(resp.content)/1_048_576:.1f} MB")
 
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
-        log.info(f"  Files in ZIP: {zf.namelist()}")
-
-        # Find APPRAISAL_INFO.TXT — skip PDFs
         fname = next(
             (n for n in zf.namelist()
              if "APPRAISAL_INFO" in n.upper() and not n.upper().endswith(".PDF")),
             None
         )
         if not fname:
-            # Fallback — any large TXT file
             fname = next(
                 (n for n in zf.namelist()
                  if n.upper().endswith(".TXT") and "INFO" in n.upper()),
                 None
             )
         if not fname:
-            log.error(f"Could not find data file in ZIP. Files: {zf.namelist()}")
+            log.error(f"Could not find data file. Files: {zf.namelist()}")
             return lookup
 
         log.info(f"  Parsing {fname} ...")
@@ -249,28 +245,27 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
 
         # Fill date range
         date_inputs = await page.query_selector_all('input[placeholder="mm/dd/yyyy"]')
+        log.info(f"  Found {len(date_inputs)} date inputs")
         if len(date_inputs) >= 1:
             await date_inputs[0].click()
+            await date_inputs[0].triple_click()
             await date_inputs[0].fill(date_from)
-            await date_inputs[0].press("Tab")
             await page.wait_for_timeout(300)
+            await date_inputs[0].press("Tab")
+            val0 = await date_inputs[0].input_value()
+            log.info(f"  Date from: '{val0}'")
         if len(date_inputs) >= 2:
             await date_inputs[1].click()
+            await date_inputs[1].triple_click()
             await date_inputs[1].fill(date_to)
-            await date_inputs[1].press("Tab")
             await page.wait_for_timeout(300)
+            await date_inputs[1].press("Tab")
+            val1 = await date_inputs[1].input_value()
+            log.info(f"  Date to: '{val1}'")
 
-        # Click the Document Types area to open dropdown
-        doc_type_area = page.locator('[class*="document-type"], [class*="DocumentType"], label:has-text("Document Types")').first
-        if await doc_type_area.count() > 0:
-            await doc_type_area.click()
-            await page.wait_for_timeout(500)
-
-        # Look for the doc type in the list and click it
-        # Tyler Tech shows a scrollable list of checkboxes
+        # Select doc type from list
         option = page.locator(f'text="{doc_type}"').first
         if await option.count() == 0:
-            # Try partial match
             option = page.locator(f'li:has-text("{doc_type}"), div:has-text("{doc_type}"), label:has-text("{doc_type}")').first
 
         if await option.count() > 0:
@@ -279,8 +274,8 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
             log.info(f"  Selected: {doc_type}")
             await page.wait_for_timeout(500)
         else:
-            # Try searching in the doc type search box
-            search_input = page.locator('input[placeholder*="Search"], .document-type-search input').first
+            # Try search box
+            search_input = page.locator('input[placeholder*="Search"], input[placeholder*="search"]').first
             if await search_input.count() > 0:
                 await search_input.fill(doc_type[:8])
                 await page.wait_for_timeout(800)
@@ -300,8 +295,27 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                 await context.close()
                 return records
 
-        # Click Search button
-        await page.locator('button:has-text("Search")').first.click()
+        # Click Search using JavaScript
+        await page.wait_for_timeout(500)
+        clicked = await page.evaluate("""
+            () => {
+                const btns = document.querySelectorAll('button');
+                for (const btn of btns) {
+                    if (btn.textContent.trim() === 'Search') {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        """)
+        log.info(f"  Search button clicked: {clicked}")
+        if not clicked:
+            log.warning(f"  Search button not found for {doc_type}")
+            await page.close()
+            await context.close()
+            return records
+
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(3000)
 
@@ -315,16 +329,16 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                 log.info(f"  {doc_type}: 0 results")
                 break
 
-            # Log total results count
+            # Log total
             try:
-                total_el = await page.query_selector('[class*="total-results"], [class*="result-count"], [class*="showing"]')
+                total_el = await page.query_selector('[class*="total"], [class*="count"], [class*="showing"]')
                 if total_el:
                     log.info(f"  {doc_type} p{page_num}: {await total_el.inner_text()}")
             except Exception:
                 pass
 
-            # Get rows — Tyler Tech wraps each result in a card/row
-            rows = await page.query_selector_all('.document-row, [class*="document-row"], [class*="result-item"], [class*="search-result-item"]')
+            # Get rows
+            rows = await page.query_selector_all('.document-row, [class*="document-row"], [class*="result-item"]')
             if not rows:
                 rows = await page.query_selector_all('tbody tr')
             if not rows:
@@ -350,10 +364,8 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                             filed = m2.group(1)
 
                     # Try labeled elements
-                    for sel, attr in [
-                        ('[class*="grantor"]', "grantor"),
-                        ('[class*="grantee"]', "grantee"),
-                    ]:
+                    for sel, attr in [('[class*="grantor"]', "grantor"),
+                                      ('[class*="grantee"]', "grantee")]:
                         el = await row.query_selector(sel)
                         if el:
                             val = (await el.inner_text()).strip()
@@ -362,7 +374,7 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                             else:
                                 grantee = val
 
-                    # Parse from text if no labeled elements
+                    # Parse from text if needed
                     if not grantor and not grantee:
                         for i, line in enumerate(lines):
                             if re.match(r"\d{2}/\d{2}/\d{4}", line):
