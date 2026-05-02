@@ -238,42 +238,44 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         await accept_disclaimer(page)
         await page.wait_for_timeout(1000)
 
-        # Fill date range
+        # Fill date range using keyboard input (React inputs need this)
         date_inputs = await page.query_selector_all('input[placeholder="mm/dd/yyyy"]')
         log.info(f"  Found {len(date_inputs)} date inputs")
         if len(date_inputs) >= 1:
             await date_inputs[0].click()
-            await date_inputs[0].fill(date_from)
-            await page.wait_for_timeout(300)
-            await date_inputs[0].press("Tab")
+            await page.keyboard.type(date_from, delay=50)
+            await page.keyboard.press("Tab")
+            await page.wait_for_timeout(500)
             val0 = await date_inputs[0].get_attribute("value") or ""
             log.info(f"  Date from: '{val0}'")
         if len(date_inputs) >= 2:
             await date_inputs[1].click()
-            await date_inputs[1].fill(date_to)
-            await page.wait_for_timeout(300)
-            await date_inputs[1].press("Tab")
+            await page.keyboard.type(date_to, delay=50)
+            await page.keyboard.press("Tab")
+            await page.wait_for_timeout(500)
             val1 = await date_inputs[1].get_attribute("value") or ""
             log.info(f"  Date to: '{val1}'")
+        await page.wait_for_timeout(1000)
 
-        # Select doc type
+        # Click the Document Types dropdown to open it
+        doc_type_trigger = page.locator('text="Document Types", [placeholder*="Document"], [placeholder*="Type"]').first
+        if await doc_type_trigger.count() > 0:
+            await doc_type_trigger.click()
+            await page.wait_for_timeout(1000)
+
+        # Find and click the doc type option
         option = page.locator(f'text="{doc_type}"').first
-        if await option.count() == 0:
-            option = page.locator(
-                f'li:has-text("{doc_type}"), div:has-text("{doc_type}"), label:has-text("{doc_type}")'
-            ).first
-
         if await option.count() > 0:
             await option.scroll_into_view_if_needed()
             await option.click()
             log.info(f"  Selected: {doc_type}")
             await page.wait_for_timeout(500)
         else:
-            search_input = page.locator(
-                'input[placeholder*="Search"], input[placeholder*="search"]'
-            ).first
+            # Try typing in search box to filter
+            search_input = page.locator('input[placeholder*="Search"]').first
             if await search_input.count() > 0:
-                await search_input.fill(doc_type[:8])
+                await search_input.click()
+                await page.keyboard.type(doc_type[:6], delay=50)
                 await page.wait_for_timeout(800)
                 option = page.locator(f'text="{doc_type}"').first
                 if await option.count() > 0:
@@ -286,7 +288,10 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                     await context.close()
                     return records
             else:
-                log.warning(f"  Could not find doc type: {doc_type}")
+                log.warning(f"  No search box found for: {doc_type}")
+                # Log page content to debug
+                content = await page.content()
+                log.info(f"  Page snippet: {content[1000:1500]}")
                 await page.close()
                 await context.close()
                 return records
