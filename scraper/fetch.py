@@ -312,26 +312,24 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                     return;
                 }}
 
-                // Listen for page transition BEFORE firing search
                 $(document).one('pageshow', function(e) {{
-                    const pageId = $(e.target).attr('id') || 'unknown';
-                    const text = $(e.target).text().substring(0, 500);
-                    window._resultsPageText = text;
-                    window._resultsPageId = pageId;
+                    window._resultsPageText = $(e.target).text().substring(0, 500);
+                    window._resultsPageId = $(e.target).attr('id') || 'unknown';
                 }});
 
                 $.ajax({{
                     url: '/web/searchPost/DOCSEARCH1008S7',
                     type: 'POST',
                     contentType: 'application/json',
+                    dataType: 'json',
+                    headers: {{
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json, text/javascript, */*; q=0.01'
+                    }},
                     data: JSON.stringify(payload),
                     success: function(data) {{
                         window._searchResult = data;
-                        if (data && data.totalPages !== undefined) {{
-                            resolve('success:totalPages=' + data.totalPages);
-                        }} else {{
-                            resolve('success:data=' + JSON.stringify(data).substring(0, 200));
-                        }}
+                        resolve('success:type=' + typeof data + ':keys=' + (data ? Object.keys(data).join(',') : 'null'));
                     }},
                     error: function(xhr) {{
                         resolve('error:' + xhr.status + ':' + xhr.responseText.substring(0, 100));
@@ -340,28 +338,63 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
             }})
         """)
         log.info(f"  {doc_type} ajax: {result}")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(4000)
 
-        # Check what the AJAX actually returned
         search_data = await page.evaluate("JSON.stringify(window._searchResult || null)")
-        log.info(f"  {doc_type} searchResult: {str(search_data)[:500]}")
+        log.info(f"  {doc_type} searchResult: {str(search_data)[:300]}")
 
         results_text = await page.evaluate("window._resultsPageText || 'no_transition'")
         log.info(f"  {doc_type} resultsPageText: {str(results_text)[:300]}")
 
-        # The SPA keeps all pages in the DOM — find the active results page
-        # Look for any page div that is NOT the search form
-        all_pages_text = await page.evaluate("""
+        all_pages = await page.evaluate("""
             () => {
                 const pages = document.querySelectorAll('[data-role="page"]');
                 return Array.from(pages).map(p => ({
                     id: p.id,
                     active: p.classList.contains('ui-page-active'),
-                    text: p.innerText.substring(0, 200)
+                    text: p.innerText.substring(0, 150)
                 }));
             }
         """)
-        log.info(f"  {doc_type} all pages: {all_pages_text}")
+        log.info(f"  {doc_type} all pages: {all_pages}")
+
+        # If we got a valid JSON response with totalPages, try to get results
+        if search_data and search_data != 'null':
+            try:
+                sd = json.loads(search_data)
+                total_pages = sd.get("totalPages", 0)
+                log.info(f"  {doc_type} totalPages={total_pages}")
+
+                if total_pages > 0:
+                    # Results are in the DOM — find the results page div
+                    recs = await parse_result_rows(page, doc_type, cat, cat_label)
+                    log.info(f"  {doc_type}: {len(recs)} rows found")
+                    records.extend(recs)
+
+                    # Page through results
+                    for pg in range(1, total_pages):
+                        get_page = await page.evaluate(f"""
+                            () => new Promise((resolve) => {{
+                                $.ajax({{
+                                    url: '/web/searchResults/DOCSEARCH1008S7',
+                                    type: 'GET',
+                                    dataType: 'json',
+                                    headers: {{
+                                        'X-Requested-With': 'XMLHttpRequest',
+                                        'Accept': 'application/json, text/javascript, */*; q=0.01'
+                                    }},
+                                    data: {{ page: {pg} }},
+                                    success: function(data) {{ resolve('ok'); }},
+                                    error: function(xhr) {{ resolve('err:' + xhr.status); }}
+                                }});
+                            }})
+                        """)
+                        await page.wait_for_timeout(2000)
+                        recs = await parse_result_rows(page, doc_type, cat, cat_label)
+                        records.extend(recs)
+
+            except Exception:
+                log.warning(f"  {doc_type} parse error:\n{traceback.format_exc()}")
 
     except Exception as e:
         log.warning(f"  Error {doc_type}: {e}\n{traceback.format_exc()}")
