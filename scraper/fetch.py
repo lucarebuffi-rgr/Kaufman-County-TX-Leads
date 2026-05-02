@@ -208,14 +208,7 @@ async def scrape_all(date_from: str, date_to: str) -> list:
     all_records = []
     async with httpx.AsyncClient(
         follow_redirects=True,
-        headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": BASE_URL,
-            "Content-Type": "application/json",
-        },
+        headers={"User-Agent": "Mozilla/5.0"},
         timeout=60
     ) as client:
         # Accept disclaimer
@@ -224,46 +217,32 @@ async def scrape_all(date_from: str, date_to: str) -> list:
             BASE_HOST + "/web/user/disclaimer",
             data={"disclaimer": "accept", "submit": "Accept"}
         )
-        log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        # Get document types with JSON accept header
-        dt_resp = await client.get(
-            BASE_HOST + "/web/search/documentTypes/DOCSEARCH1008S7",
-            headers={"Accept": "application/json, text/javascript, */*; q=0.01",
-                     "X-Requested-With": "XMLHttpRequest"}
-        )
-        log.info(f"  Doc types: {dt_resp.status_code} len={len(dt_resp.text)}")
-        log.info(f"  Doc types response: {dt_resp.text[:2000]}")
+        # Load search page
+        r = await client.get(BASE_URL)
 
-        # Try different field name formats for the search
-        test_payloads = [
-            {
-                "field_RecDateID_DOT_StartDate": date_from,
-                "field_RecDateID_DOT_EndDate": date_to,
-                "field_DocTypeID": "LIS PENDENS",
-            },
-            {
-                "RecordingDateStart": date_from,
-                "RecordingDateEnd": date_to,
-                "DocumentType": "LIS PENDENS",
-            },
-            {
-                "startDate": date_from,
-                "endDate": date_to,
-                "docType": "LIS PENDENS",
-            },
-            {
-                "field_RecDateID_DOT_StartDate": date_from,
-                "field_RecDateID_DOT_EndDate": date_to,
-            },
-        ]
+        # Find all hidden inputs and data attributes
+        hidden = dict(re.findall(
+            r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']',
+            r.text, re.I
+        ))
+        log.info(f"  Hidden inputs: {hidden}")
 
-        for i, payload in enumerate(test_payloads):
-            resp = await client.post(
-                BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
-                json=payload
-            )
-            log.info(f"  Payload {i}: {resp.status_code} response={resp.text[:200]}")
+        # Find data-url or data-ajax attributes
+        data_attrs = re.findall(r'data-(?:url|ajax|post|action)=["\']([^"\']+)["\']', r.text, re.I)
+        log.info(f"  Data attrs: {data_attrs[:20]}")
+
+        # Find any JSON config objects in the page
+        json_configs = re.findall(r'var\s+\w+\s*=\s*(\{[^;]{20,200}\})', r.text)
+        log.info(f"  JS configs: {json_configs[:5]}")
+
+        # Find the searchPost call in JS
+        search_calls = re.findall(r'searchPost[^;]{0,200}', r.text)
+        log.info(f"  searchPost calls: {search_calls[:3]}")
+
+        # Check the full search page for field names
+        field_names = re.findall(r'field_\w+', r.text)
+        log.info(f"  Field names in page: {sorted(set(field_names))}")
 
     return all_records
 
