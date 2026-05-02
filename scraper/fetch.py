@@ -239,56 +239,49 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         await accept_disclaimer(page)
         await page.wait_for_timeout(2000)
 
-        # Set dates and doc type via JavaScript then submit the form
+        # Use jQuery AJAX exactly as the site does internally
+        doc_type_escaped = doc_type.replace("'", "\\'")
         result = await page.evaluate(f"""
-            () => {{
-                // Set date fields
-                const start = document.getElementById('field_RecDateID_DOT_StartDate');
-                const end   = document.getElementById('field_RecDateID_DOT_EndDate');
-                if (start) start.value = '{date_from}';
-                if (end)   end.value   = '{date_to}';
-
-                // Set doc type hidden field
-                const docType = document.getElementById('field_selfservice_documentTypes');
-                if (docType) docType.value = '{doc_type}';
-
-                // Fire change events
-                [start, end, docType].forEach(el => {{
-                    if (el) {{
-                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        el.dispatchEvent(new Event('input',  {{bubbles: true}}));
+            () => new Promise((resolve) => {{
+                const payload = {{
+                    field_RecDateID_DOT_StartDate: '{date_from}',
+                    field_RecDateID_DOT_EndDate: '{date_to}',
+                    field_selfservice_documentTypes: '{doc_type_escaped}'
+                }};
+                if (typeof $ === 'undefined') {{
+                    resolve('jquery_not_available');
+                    return;
+                }}
+                $.ajax({{
+                    url: '/web/searchPost/DOCSEARCH1008S7',
+                    type: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(payload),
+                    success: function(data) {{
+                        window._searchResult = data;
+                        resolve('success:' + JSON.stringify(data).substring(0, 200));
+                    }},
+                    error: function(xhr) {{
+                        window._searchResult = null;
+                        resolve('error:' + xhr.status + ':' + xhr.responseText.substring(0, 100));
                     }}
                 }});
-
-                // Find and submit the form
-                const form = document.querySelector('form[action*="searchPost"]');
-                if (form) {{
-                    form.submit();
-                    return 'form submitted';
-                }}
-
-                // Try clicking any search button
-                const btns = document.querySelectorAll('button, input[type=submit]');
-                for (const btn of btns) {{
-                    const txt = (btn.textContent || btn.value || '').trim().toLowerCase();
-                    if (txt.includes('search')) {{
-                        btn.click();
-                        return 'button clicked: ' + txt;
-                    }}
-                }}
-                return 'no form or button found';
-            }}
+            }})
         """)
-        log.info(f"  {doc_type} submit result: {result}")
+        log.info(f"  {doc_type} ajax result: {result}")
 
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(2000)
 
+        # Navigate to results page
+        await page.goto(
+            BASE_HOST + "/web/searchResults/DOCSEARCH1008S7",
+            timeout=30_000, wait_until="networkidle"
+        )
+        await page.wait_for_timeout(2000)
         content = await page.content()
-        log.info(f"  {doc_type} after submit: len={len(content)} url={page.url}")
-        log.info(f"  Snippet 5000-6000: {content[5000:6000]}")
+        log.info(f"  {doc_type} results: len={len(content)} url={page.url}")
+        log.info(f"  Snippet 4000-5000: {content[4000:5000]}")
 
-        # Check for results
         if "No results" in content or "0 Total Results" in content:
             log.info(f"  {doc_type}: 0 results")
             return records
@@ -358,7 +351,6 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         log.info(f"  {doc_type}: {len(records)} records parsed")
 
         # Next pages
-        page_num = 1
         while True:
             next_btn = page.locator(
                 'button:has-text("Next"), [aria-label="Next"], [aria-label="Next page"]'
@@ -367,8 +359,40 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                 await next_btn.click()
                 await page.wait_for_load_state("networkidle")
                 await page.wait_for_timeout(2000)
-                page_num += 1
-                # parse additional rows here if needed
+                for row in await page.query_selector_all(
+                    '.document-row, [class*="document-row"], tbody tr'
+                ):
+                    try:
+                        text  = await row.inner_text()
+                        lines = [l.strip() for l in text.split("\n") if l.strip()]
+                        instrument = ""
+                        filed      = ""
+                        grantor    = ""
+                        grantee    = ""
+                        for line in lines:
+                            m = re.match(r"(\d{4}-\d+)", line)
+                            if m and not instrument:
+                                instrument = m.group(1)
+                            m2 = re.match(r"(\d{2}/\d{2}/\d{4})", line)
+                            if m2 and not filed:
+                                filed = m2.group(1)
+                        if not instrument:
+                            continue
+                        records.append({
+                            "doc_num"  : instrument,
+                            "doc_type" : doc_type,
+                            "cat"      : cat,
+                            "cat_label": cat_label,
+                            "filed"    : parse_date(filed) or filed,
+                            "grantor"  : grantor,
+                            "grantee"  : grantee,
+                            "legal"    : "",
+                            "amount"   : None,
+                            "clerk_url": BASE_URL,
+                            "_demo"    : False,
+                        })
+                    except Exception:
+                        continue
             else:
                 break
 
