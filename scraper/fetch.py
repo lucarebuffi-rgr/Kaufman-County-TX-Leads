@@ -211,13 +211,11 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         headers={
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
             "X-Requested-With": "XMLHttpRequest",
             "Referer": BASE_URL,
         },
         timeout=60
     ) as client:
-        # Accept disclaimer
         await client.get(BASE_URL)
         await client.post(
             BASE_HOST + "/web/user/disclaimer",
@@ -225,41 +223,28 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         )
         log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        for doc_type, (cat, cat_label) in DOC_TYPES.items():
-            try:
-                payload = {
-                    "field_RecDateID_DOT_StartDate": date_from,
-                    "field_RecDateID_DOT_EndDate":   date_to,
-                    "field_selfservice_documentTypes": doc_type,
-                }
-                resp = await client.post(
-                    BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
-                    json=payload
-                )
-                log.info(f"  {doc_type}: {resp.status_code} response={resp.text[:300]}")
+        # Try form-encoded POST with every field name variation
+        test_cases = [
+            # form data with field names from page source
+            {"field_RecDateID_DOT_StartDate": date_from,
+             "field_RecDateID_DOT_EndDate": date_to,
+             "field_selfservice_documentTypes": "LIS PENDENS"},
+            # without doc type — just dates
+            {"field_RecDateID_DOT_StartDate": date_from,
+             "field_RecDateID_DOT_EndDate": date_to},
+            # with contains flag
+            {"field_RecDateID_DOT_StartDate": date_from,
+             "field_RecDateID_DOT_EndDate": date_to,
+             "field_RecDateID-containsInput": "true",
+             "field_selfservice_documentTypes": "LIS PENDENS"},
+        ]
 
-                if resp.status_code == 200:
-                    try:
-                        data = resp.json()
-                        total = data.get("totalPages", 0)
-                        log.info(f"  totalPages={total} keys={list(data.keys())}")
-
-                        # Get results if search succeeded
-                        if total > 0 or "results" in data or "searchResults" in data:
-                            results_resp = await client.get(
-                                BASE_HOST + "/web/searchResults/DOCSEARCH1008S7"
-                            )
-                            log.info(f"  Results: {results_resp.status_code} len={len(results_resp.text)}")
-                            log.info(f"  Results snippet: {results_resp.text[:500]}")
-                    except Exception:
-                        pass
-
-                # Only test first 2 for now
-                if list(DOC_TYPES.keys()).index(doc_type) >= 1:
-                    break
-
-            except Exception as e:
-                log.warning(f"  {doc_type} failed: {e}")
+        for i, form_data in enumerate(test_cases):
+            resp = await client.post(
+                BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
+                data=form_data  # form-encoded not JSON
+            )
+            log.info(f"  Test {i}: {resp.status_code} response={resp.text[:300]}")
 
     return all_records
 
