@@ -208,12 +208,7 @@ async def scrape_all(date_from: str, date_to: str) -> list:
     all_records = []
     async with httpx.AsyncClient(
         follow_redirects=True,
-        headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": BASE_URL,
-        },
+        headers={"User-Agent": "Mozilla/5.0"},
         timeout=60
     ) as client:
         await client.get(BASE_URL)
@@ -221,30 +216,40 @@ async def scrape_all(date_from: str, date_to: str) -> list:
             BASE_HOST + "/web/user/disclaimer",
             data={"disclaimer": "accept", "submit": "Accept"}
         )
-        log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        # Try form-encoded POST with every field name variation
-        test_cases = [
-            # form data with field names from page source
-            {"field_RecDateID_DOT_StartDate": date_from,
-             "field_RecDateID_DOT_EndDate": date_to,
-             "field_selfservice_documentTypes": "LIS PENDENS"},
-            # without doc type — just dates
-            {"field_RecDateID_DOT_StartDate": date_from,
-             "field_RecDateID_DOT_EndDate": date_to},
-            # with contains flag
-            {"field_RecDateID_DOT_StartDate": date_from,
-             "field_RecDateID_DOT_EndDate": date_to,
-             "field_RecDateID-containsInput": "true",
-             "field_selfservice_documentTypes": "LIS PENDENS"},
-        ]
+        # Load and search the JS file for searchPost usage
+        js_resp = await client.get(
+            BASE_HOST + "/web/controller/js/self.service.2025-1-22.js"
+        )
+        js = js_resp.text
 
-        for i, form_data in enumerate(test_cases):
-            resp = await client.post(
-                BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
-                data=form_data  # form-encoded not JSON
-            )
-            log.info(f"  Test {i}: {resp.status_code} response={resp.text[:300]}")
+        # Find searchPost references
+        import re as _re
+        search_post_contexts = _re.findall(
+            r'.{200}searchPost.{200}', js
+        )
+        for ctx in search_post_contexts[:5]:
+            log.info(f"  searchPost context: {ctx}")
+
+        # Find what gets sent in the POST body
+        post_body_patterns = _re.findall(
+            r'(?:data|body|payload|criteria)\s*[=:]\s*\{[^}]{10,300}\}',
+            js, _re.I
+        )
+        for p in post_body_patterns[:5]:
+            log.info(f"  POST body pattern: {p}")
+
+        # Find all string literals that look like field names
+        field_refs = _re.findall(r'"(field_[^"]+)"', js)
+        log.info(f"  Field refs in JS: {sorted(set(field_refs))}")
+
+        # Find getCriteriaMap or similar functions
+        criteria_funcs = _re.findall(
+            r'(?:getCriteria|buildCriteria|searchCriteria)[^{]{0,50}\{[^}]{10,500}\}',
+            js, _re.I
+        )
+        for f in criteria_funcs[:3]:
+            log.info(f"  Criteria func: {f}")
 
     return all_records
 
