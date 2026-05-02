@@ -214,6 +214,7 @@ async def scrape_all(date_from: str, date_to: str) -> list:
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "X-Requested-With": "XMLHttpRequest",
             "Referer": BASE_URL,
+            "Content-Type": "application/json",
         },
         timeout=60
     ) as client:
@@ -225,40 +226,44 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         )
         log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        # Get doc types to verify names
-        dt_resp = await client.get(BASE_HOST + "/web/search/documentTypes/DOCSEARCH1008S7")
-        log.info(f"  Doc types endpoint: {dt_resp.status_code} len={len(dt_resp.text)}")
-        log.info(f"  Doc types snippet: {dt_resp.text[:1000]}")
+        # Get document types with JSON accept header
+        dt_resp = await client.get(
+            BASE_HOST + "/web/search/documentTypes/DOCSEARCH1008S7",
+            headers={"Accept": "application/json, text/javascript, */*; q=0.01",
+                     "X-Requested-With": "XMLHttpRequest"}
+        )
+        log.info(f"  Doc types: {dt_resp.status_code} len={len(dt_resp.text)}")
+        log.info(f"  Doc types response: {dt_resp.text[:2000]}")
 
-        for doc_type, (cat, cat_label) in DOC_TYPES.items():
-            try:
-                # Build payload as a regular dict — no f-string
-                payload = {
-                    "field_RecDateID_DOT_StartDate": date_from,
-                    "field_RecDateID_DOT_EndDate": date_to,
-                    "field_DocTypeID": doc_type,
-                }
+        # Try different field name formats for the search
+        test_payloads = [
+            {
+                "field_RecDateID_DOT_StartDate": date_from,
+                "field_RecDateID_DOT_EndDate": date_to,
+                "field_DocTypeID": "LIS PENDENS",
+            },
+            {
+                "RecordingDateStart": date_from,
+                "RecordingDateEnd": date_to,
+                "DocumentType": "LIS PENDENS",
+            },
+            {
+                "startDate": date_from,
+                "endDate": date_to,
+                "docType": "LIS PENDENS",
+            },
+            {
+                "field_RecDateID_DOT_StartDate": date_from,
+                "field_RecDateID_DOT_EndDate": date_to,
+            },
+        ]
 
-                # POST to searchPost endpoint
-                search_resp = await client.post(
-                    BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
-                    json=payload
-                )
-                log.info(f"  {doc_type} searchPost: {search_resp.status_code} len={len(search_resp.text)}")
-                log.info(f"  Snippet: {search_resp.text[:300]}")
-
-                # GET results
-                results_resp = await client.get(
-                    BASE_HOST + "/web/searchResults/DOCSEARCH1008S7"
-                )
-                log.info(f"  {doc_type} results: {results_resp.status_code} len={len(results_resp.text)}")
-                log.info(f"  Results snippet: {results_resp.text[:500]}")
-
-                # Only run first doc type for this debug run
-                break
-
-            except Exception as e:
-                log.warning(f"  {doc_type} failed: {e}")
+        for i, payload in enumerate(test_payloads):
+            resp = await client.post(
+                BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
+                json=payload
+            )
+            log.info(f"  Payload {i}: {resp.status_code} response={resp.text[:200]}")
 
     return all_records
 
