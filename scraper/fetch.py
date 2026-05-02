@@ -238,46 +238,49 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         await accept_disclaimer(page)
         await page.wait_for_timeout(3000)
 
-        # Log full page content to understand structure
-        content = await page.content()
-        log.info(f"  Page length: {len(content)}")
+        # Use JavaScript to set date values directly and trigger change events
+        await page.evaluate(f"""
+            () => {{
+                const startEl = document.getElementById('field_RecDateID_DOT_StartDate');
+                const endEl = document.getElementById('field_RecDateID_DOT_EndDate');
+                if (startEl) {{
+                    startEl.value = '{date_from}';
+                    startEl.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    startEl.dispatchEvent(new Event('input', {{bubbles: true}}));
+                }}
+                if (endEl) {{
+                    endEl.value = '{date_to}';
+                    endEl.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    endEl.dispatchEvent(new Event('input', {{bubbles: true}}));
+                }}
+            }}
+        """)
+        await page.wait_for_timeout(500)
 
-        # Find all inputs on the page
-        all_inputs = await page.query_selector_all("input")
-        log.info(f"  Total inputs found: {len(all_inputs)}")
-        for inp in all_inputs[:10]:
-            try:
-                itype = await inp.get_attribute("type") or ""
-                iname = await inp.get_attribute("name") or ""
-                iid   = await inp.get_attribute("id") or ""
-                iph   = await inp.get_attribute("placeholder") or ""
-                icls  = await inp.get_attribute("class") or ""
-                log.info(f"  Input: type={itype} name={iname} id={iid} placeholder={iph} class={icls[:30]}")
-            except Exception:
-                pass
+        # Verify dates were set
+        val_start = await page.evaluate("document.getElementById('field_RecDateID_DOT_StartDate')?.value || ''")
+        val_end   = await page.evaluate("document.getElementById('field_RecDateID_DOT_EndDate')?.value || ''")
+        log.info(f"  Dates set: {val_start} → {val_end}")
 
-        # Find all buttons
-        all_buttons = await page.query_selector_all("button, input[type=submit], input[type=button]")
-        log.info(f"  Total buttons: {len(all_buttons)}")
-        for btn in all_buttons[:5]:
-            try:
-                btxt = await btn.inner_text()
-                bval = await btn.get_attribute("value") or ""
-                bid  = await btn.get_attribute("id") or ""
-                log.info(f"  Button: text={btxt.strip()[:30]} value={bval} id={bid}")
-            except Exception:
-                pass
-
-        # Find select elements
-        all_selects = await page.query_selector_all("select")
-        log.info(f"  Total selects: {len(all_selects)}")
-        for sel in all_selects[:5]:
-            try:
-                sid = await sel.get_attribute("id") or ""
-                sname = await sel.get_attribute("name") or ""
-                log.info(f"  Select: id={sid} name={sname}")
-            except Exception:
-                pass
+        # Find the document type section - look for any element containing doc type text
+        # jQuery Mobile uses li elements in a listview
+        found = await page.evaluate(f"""
+            () => {{
+                // Try to find and click doc type in any list
+                const allElements = document.querySelectorAll('li, label, a, span, div');
+                for (const el of allElements) {{
+                    if (el.textContent.trim() === '{doc_type}') {{
+                        el.click();
+                        return 'clicked:' + el.tagName + ':' + el.className;
+                    }}
+                }}
+                // Log all li text content for debugging
+                const lis = document.querySelectorAll('li');
+                const texts = Array.from(lis).map(li => li.textContent.trim().substring(0, 50));
+                return 'not_found. li texts: ' + JSON.stringify(texts.slice(0, 20));
+            }}
+        """)
+        log.info(f"  Doc type search result: {found}")
 
         log.info(f"  {doc_type}: 0 rows (debug)")
     except Exception as e:
