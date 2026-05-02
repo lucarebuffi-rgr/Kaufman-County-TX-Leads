@@ -261,65 +261,33 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         },
         timeout=60
     ) as client:
-        # Step 1 — load disclaimer page
+        # Accept disclaimer
+        await client.get(BASE_URL)
+        await client.post(
+            "https://kaufmancountytx-web.tylerhost.net/web/user/disclaimer",
+            data={"disclaimer": "accept", "submit": "Accept"}
+        )
+        log.info(f"  Cookies: {list(client.cookies.keys())}")
+
+        # Load search page and find AJAX endpoints
         r = await client.get(BASE_URL)
-        log.info(f"  Disclaimer page: {r.status_code} url={r.url}")
+        log.info(f"  Search page: {r.status_code} len={len(r.text)}")
 
-        # Step 2 — accept disclaimer via POST to /web/user/disclaimer
-        disclaimer_url = "https://kaufmancountytx-web.tylerhost.net/web/user/disclaimer"
-        # Find hidden inputs on disclaimer page
-        hidden = dict(re.findall(
-            r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']',
-            r.text, re.I
-        ))
-        log.info(f"  Hidden inputs: {hidden}")
-        hidden["disclaimer"] = "accept"
-        hidden["submit"]     = "Accept"
+        # Search for API endpoints in the JavaScript
+        ajax_urls = re.findall(r'["\'](/web/[^"\']+(?:search|result|query|api)[^"\']*)["\']', r.text, re.I)
+        log.info(f"  AJAX URLs found: {ajax_urls[:20]}")
 
-        r2 = await client.post(disclaimer_url, data=hidden)
-        log.info(f"  Disclaimer POST: {r2.status_code} url={r2.url}")
-        log.info(f"  Cookies after disclaimer: {list(client.cookies.keys())}")
+        # Look for controller/action patterns
+        controllers = re.findall(r'controller["\s:=]+["\']([^"\']+)["\']', r.text, re.I)
+        log.info(f"  Controllers: {controllers[:10]}")
 
-        # Step 3 — load search page to confirm we're in
-        r3 = await client.get(BASE_URL)
-        log.info(f"  Search page: {r3.status_code} url={r3.url} len={len(r3.text)}")
+        # Look for the search form action
+        form_actions = re.findall(r'<form[^>]+action=["\']([^"\']+)["\']', r.text, re.I)
+        log.info(f"  Form actions: {form_actions}")
 
-        # If still on disclaimer, try different approach
-        if "disclaimer" in str(r3.url).lower():
-            log.warning("  Still on disclaimer — trying GET with param")
-            r3 = await client.get(
-                "https://kaufmancountytx-web.tylerhost.net/web/user/disclaimer",
-                params={"disclaimer": "accept"}
-            )
-            log.info(f"  GET accept: {r3.status_code} url={r3.url}")
-            r3 = await client.get(BASE_URL)
-            log.info(f"  Search after GET: {r3.status_code} url={r3.url} len={len(r3.text)}")
-
-        # Log the search page content to find form fields
-        log.info(f"  Search page snippet 3000-4000: {r3.text[3000:4000]}")
-
-        # Step 4 — find all hidden inputs on search page
-        search_hidden = dict(re.findall(
-            r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']',
-            r3.text, re.I
-        ))
-        log.info(f"  Search hidden inputs: {search_hidden}")
-
-        # Step 5 — POST search for each doc type
-        for doc_type, (cat, cat_label) in list(DOC_TYPES.items())[:2]:  # test first 2 only
-            try:
-                form_data = {**search_hidden}
-                form_data["field_RecDateID_DOT_StartDate"] = date_from
-                form_data["field_RecDateID_DOT_EndDate"]   = date_to
-                form_data["field_DocTypeID"]               = doc_type
-                form_data["submit"]                        = "Search"
-
-                resp = await client.post(BASE_URL, data=form_data)
-                log.info(f"  {doc_type}: {resp.status_code} len={len(resp.text)}")
-                log.info(f"  Snippet 3000-4000: {resp.text[3000:4000]}")
-
-            except Exception as e:
-                log.warning(f"  {doc_type} failed: {e}")
+        # Log a bigger chunk of the page to find the search logic
+        log.info(f"  Page 10000-11000: {r.text[10000:11000]}")
+        log.info(f"  Page 20000-21000: {r.text[20000:21000]}")
 
     return all_records
 
