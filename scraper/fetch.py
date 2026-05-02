@@ -19,6 +19,12 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
+try:
+    from playwright.async_api import async_playwright
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    HAS_PLAYWRIGHT = False
+
 import httpx
 
 logging.basicConfig(
@@ -204,53 +210,197 @@ def build_parcel_lookup() -> dict:
     return lookup
 
 
+async def accept_disclaimer(page):
+    try:
+        for _ in range(3):
+            btn = page.locator('button:has-text("I Accept"), a:has-text("I Accept")')
+            if await btn.count() > 0:
+                await btn.first.click()
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(1000)
+                log.info("  Accepted disclaimer")
+                return
+            await page.wait_for_timeout(1000)
+    except Exception:
+        pass
+
+
+async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
+                          date_from: str, date_to: str) -> list:
+    records = []
+    context = await browser.new_context(
+        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    page = await context.new_page()
+    try:
+        await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
+        await page.wait_for_timeout(2000)
+        await accept_disclaimer(page)
+        await page.wait_for_timeout(2000)
+
+        # Set dates and doc type via JavaScript then submit the form
+        result = await page.evaluate(f"""
+            () => {{
+                // Set date fields
+                const start = document.getElementById('field_RecDateID_DOT_StartDate');
+                const end   = document.getElementById('field_RecDateID_DOT_EndDate');
+                if (start) start.value = '{date_from}';
+                if (end)   end.value   = '{date_to}';
+
+                // Set doc type hidden field
+                const docType = document.getElementById('field_selfservice_documentTypes');
+                if (docType) docType.value = '{doc_type}';
+
+                // Fire change events
+                [start, end, docType].forEach(el => {{
+                    if (el) {{
+                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        el.dispatchEvent(new Event('input',  {{bubbles: true}}));
+                    }}
+                }});
+
+                // Find and submit the form
+                const form = document.querySelector('form[action*="searchPost"]');
+                if (form) {{
+                    form.submit();
+                    return 'form submitted';
+                }}
+
+                // Try clicking any search button
+                const btns = document.querySelectorAll('button, input[type=submit]');
+                for (const btn of btns) {{
+                    const txt = (btn.textContent || btn.value || '').trim().toLowerCase();
+                    if (txt.includes('search')) {{
+                        btn.click();
+                        return 'button clicked: ' + txt;
+                    }}
+                }}
+                return 'no form or button found';
+            }}
+        """)
+        log.info(f"  {doc_type} submit result: {result}")
+
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(3000)
+
+        content = await page.content()
+        log.info(f"  {doc_type} after submit: len={len(content)} url={page.url}")
+        log.info(f"  Snippet 5000-6000: {content[5000:6000]}")
+
+        # Check for results
+        if "No results" in content or "0 Total Results" in content:
+            log.info(f"  {doc_type}: 0 results")
+            return records
+
+        # Parse rows
+        rows = await page.query_selector_all(
+            '.document-row, [class*="document-row"], [class*="result-item"], '
+            '[class*="search-result"], tbody tr'
+        )
+        log.info(f"  {doc_type}: {len(rows)} rows found")
+
+        for row in rows:
+            try:
+                text  = await row.inner_text()
+                lines = [l.strip() for l in text.split("\n") if l.strip()]
+                instrument = ""
+                filed      = ""
+                grantor    = ""
+                grantee    = ""
+
+                for line in lines:
+                    m = re.match(r"(\d{4}-\d+)", line)
+                    if m and not instrument:
+                        instrument = m.group(1)
+                    m2 = re.match(r"(\d{2}/\d{2}/\d{4})", line)
+                    if m2 and not filed:
+                        filed = m2.group(1)
+
+                for sel, attr in [('[class*="grantor"]', "grantor"),
+                                   ('[class*="grantee"]', "grantee")]:
+                    el = await row.query_selector(sel)
+                    if el:
+                        val = (await el.inner_text()).strip()
+                        if attr == "grantor":
+                            grantor = val
+                        else:
+                            grantee = val
+
+                if not grantor and not grantee:
+                    for i, line in enumerate(lines):
+                        if re.match(r"\d{2}/\d{2}/\d{4}", line):
+                            if i + 1 < len(lines) and len(lines[i+1]) > 2:
+                                grantor = lines[i + 1]
+                            if i + 2 < len(lines) and len(lines[i+2]) > 2:
+                                grantee = lines[i + 2]
+                            break
+
+                if not instrument:
+                    continue
+
+                records.append({
+                    "doc_num"  : instrument,
+                    "doc_type" : doc_type,
+                    "cat"      : cat,
+                    "cat_label": cat_label,
+                    "filed"    : parse_date(filed) or filed,
+                    "grantor"  : grantor,
+                    "grantee"  : grantee,
+                    "legal"    : "",
+                    "amount"   : None,
+                    "clerk_url": BASE_URL,
+                    "_demo"    : False,
+                })
+            except Exception:
+                continue
+
+        log.info(f"  {doc_type}: {len(records)} records parsed")
+
+        # Next pages
+        page_num = 1
+        while True:
+            next_btn = page.locator(
+                'button:has-text("Next"), [aria-label="Next"], [aria-label="Next page"]'
+            ).first
+            if await next_btn.count() > 0 and await next_btn.is_enabled():
+                await next_btn.click()
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(2000)
+                page_num += 1
+                # parse additional rows here if needed
+            else:
+                break
+
+    except Exception as e:
+        log.warning(f"  Error {doc_type}: {e}\n{traceback.format_exc()}")
+    finally:
+        await page.close()
+        await context.close()
+
+    log.info(f"  {doc_type} total: {len(records)}")
+    return records
+
+
 async def scrape_all(date_from: str, date_to: str) -> list:
+    if not HAS_PLAYWRIGHT:
+        log.error("Playwright not available!")
+        return []
     all_records = []
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=60
-    ) as client:
-        await client.get(BASE_URL)
-        await client.post(
-            BASE_HOST + "/web/user/disclaimer",
-            data={"disclaimer": "accept", "submit": "Accept"}
-        )
-
-        # Load and search the JS file for searchPost usage
-        js_resp = await client.get(
-            BASE_HOST + "/web/controller/js/self.service.2025-1-22.js"
-        )
-        js = js_resp.text
-
-        # Find searchPost references
-        import re as _re
-        search_post_contexts = _re.findall(
-            r'.{200}searchPost.{200}', js
-        )
-        for ctx in search_post_contexts[:5]:
-            log.info(f"  searchPost context: {ctx}")
-
-        # Find what gets sent in the POST body
-        post_body_patterns = _re.findall(
-            r'(?:data|body|payload|criteria)\s*[=:]\s*\{[^}]{10,300}\}',
-            js, _re.I
-        )
-        for p in post_body_patterns[:5]:
-            log.info(f"  POST body pattern: {p}")
-
-        # Find all string literals that look like field names
-        field_refs = _re.findall(r'"(field_[^"]+)"', js)
-        log.info(f"  Field refs in JS: {sorted(set(field_refs))}")
-
-        # Find getCriteriaMap or similar functions
-        criteria_funcs = _re.findall(
-            r'(?:getCriteria|buildCriteria|searchCriteria)[^{]{0,50}\{[^}]{10,500}\}',
-            js, _re.I
-        )
-        for f in criteria_funcs[:3]:
-            log.info(f"  Criteria func: {f}")
-
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            for doc_type, (cat, cat_label) in DOC_TYPES.items():
+                try:
+                    recs = await scrape_doc_type(
+                        browser, doc_type, cat, cat_label, date_from, date_to
+                    )
+                    all_records.extend(recs)
+                except Exception as e:
+                    log.warning(f"  Failed {doc_type}: {e}")
+            await browser.close()
+    except Exception as e:
+        log.error(f"Playwright error: {e}\n{traceback.format_exc()}")
     return all_records
 
 
