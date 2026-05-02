@@ -225,6 +225,66 @@ async def accept_disclaimer(page):
         pass
 
 
+async def parse_result_rows(page, doc_type, cat, cat_label) -> list:
+    records = []
+    rows = await page.query_selector_all(
+        '.document-row, [class*="document-row"], [class*="result-item"], '
+        '[class*="searchResult"], [class*="search-result"], '
+        'li[class*="ss-"], tbody tr'
+    )
+    log.info(f"  {doc_type}: {len(rows)} rows found")
+    for row in rows:
+        try:
+            text  = await row.inner_text()
+            lines = [l.strip() for l in text.split("\n") if l.strip()]
+            instrument = ""
+            filed      = ""
+            grantor    = ""
+            grantee    = ""
+            for line in lines:
+                m = re.match(r"(\d{4}-\d+)", line)
+                if m and not instrument:
+                    instrument = m.group(1)
+                m2 = re.match(r"(\d{2}/\d{2}/\d{4})", line)
+                if m2 and not filed:
+                    filed = m2.group(1)
+            for sel, attr in [('[class*="grantor"]', "grantor"),
+                               ('[class*="grantee"]', "grantee")]:
+                el = await row.query_selector(sel)
+                if el:
+                    val = (await el.inner_text()).strip()
+                    if attr == "grantor":
+                        grantor = val
+                    else:
+                        grantee = val
+            if not grantor and not grantee:
+                for i, line in enumerate(lines):
+                    if re.match(r"\d{2}/\d{2}/\d{4}", line):
+                        if i + 1 < len(lines) and len(lines[i+1]) > 2:
+                            grantor = lines[i + 1]
+                        if i + 2 < len(lines) and len(lines[i+2]) > 2:
+                            grantee = lines[i + 2]
+                        break
+            if not instrument:
+                continue
+            records.append({
+                "doc_num"  : instrument,
+                "doc_type" : doc_type,
+                "cat"      : cat,
+                "cat_label": cat_label,
+                "filed"    : parse_date(filed) or filed,
+                "grantor"  : grantor,
+                "grantee"  : grantee,
+                "legal"    : "",
+                "amount"   : None,
+                "clerk_url": BASE_URL,
+                "_demo"    : False,
+            })
+        except Exception:
+            continue
+    return records
+
+
 async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                           date_from: str, date_to: str) -> list:
     records = []
@@ -239,7 +299,6 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
         await accept_disclaimer(page)
         await page.wait_for_timeout(2000)
 
-        # Use jQuery AJAX exactly as the site does internally
         doc_type_escaped = doc_type.replace("'", "\\'")
         result = await page.evaluate(f"""
             () => new Promise((resolve) => {{
@@ -259,17 +318,16 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                     data: JSON.stringify(payload),
                     success: function(data) {{
                         window._searchResult = data;
-                        resolve('success:' + JSON.stringify(data).substring(0, 200));
+                        resolve('success');
                     }},
                     error: function(xhr) {{
                         window._searchResult = null;
-                        resolve('error:' + xhr.status + ':' + xhr.responseText.substring(0, 100));
+                        resolve('error:' + xhr.status);
                     }}
                 }});
             }})
         """)
-        log.info(f"  {doc_type} ajax result: {result}")
-
+        log.info(f"  {doc_type} ajax: {result}")
         await page.wait_for_timeout(2000)
 
         # Navigate to results page
@@ -278,76 +336,21 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
             timeout=30_000, wait_until="networkidle"
         )
         await page.wait_for_timeout(2000)
-        content = await page.content()
-        log.info(f"  {doc_type} results: len={len(content)} url={page.url}")
-        log.info(f"  Snippet 4000-5000: {content[4000:5000]}")
 
-        if "No results" in content or "0 Total Results" in content:
+        content = await page.content()
+        log.info(f"  {doc_type} results: len={len(content)}")
+
+        # Log body text to understand structure — only for first doc type
+        if doc_type == "LIS PENDENS":
+            body_text = await page.evaluate("document.body.innerText")
+            log.info(f"  Body text: {body_text[:3000]}")
+
+        if "No results" in content or "0 results" in content.lower():
             log.info(f"  {doc_type}: 0 results")
             return records
 
-        # Parse rows
-        rows = await page.query_selector_all(
-            '.document-row, [class*="document-row"], [class*="result-item"], '
-            '[class*="search-result"], tbody tr'
-        )
-        log.info(f"  {doc_type}: {len(rows)} rows found")
-
-        for row in rows:
-            try:
-                text  = await row.inner_text()
-                lines = [l.strip() for l in text.split("\n") if l.strip()]
-                instrument = ""
-                filed      = ""
-                grantor    = ""
-                grantee    = ""
-
-                for line in lines:
-                    m = re.match(r"(\d{4}-\d+)", line)
-                    if m and not instrument:
-                        instrument = m.group(1)
-                    m2 = re.match(r"(\d{2}/\d{2}/\d{4})", line)
-                    if m2 and not filed:
-                        filed = m2.group(1)
-
-                for sel, attr in [('[class*="grantor"]', "grantor"),
-                                   ('[class*="grantee"]', "grantee")]:
-                    el = await row.query_selector(sel)
-                    if el:
-                        val = (await el.inner_text()).strip()
-                        if attr == "grantor":
-                            grantor = val
-                        else:
-                            grantee = val
-
-                if not grantor and not grantee:
-                    for i, line in enumerate(lines):
-                        if re.match(r"\d{2}/\d{2}/\d{4}", line):
-                            if i + 1 < len(lines) and len(lines[i+1]) > 2:
-                                grantor = lines[i + 1]
-                            if i + 2 < len(lines) and len(lines[i+2]) > 2:
-                                grantee = lines[i + 2]
-                            break
-
-                if not instrument:
-                    continue
-
-                records.append({
-                    "doc_num"  : instrument,
-                    "doc_type" : doc_type,
-                    "cat"      : cat,
-                    "cat_label": cat_label,
-                    "filed"    : parse_date(filed) or filed,
-                    "grantor"  : grantor,
-                    "grantee"  : grantee,
-                    "legal"    : "",
-                    "amount"   : None,
-                    "clerk_url": BASE_URL,
-                    "_demo"    : False,
-                })
-            except Exception:
-                continue
-
+        recs = await parse_result_rows(page, doc_type, cat, cat_label)
+        records.extend(recs)
         log.info(f"  {doc_type}: {len(records)} records parsed")
 
         # Next pages
@@ -359,40 +362,8 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                 await next_btn.click()
                 await page.wait_for_load_state("networkidle")
                 await page.wait_for_timeout(2000)
-                for row in await page.query_selector_all(
-                    '.document-row, [class*="document-row"], tbody tr'
-                ):
-                    try:
-                        text  = await row.inner_text()
-                        lines = [l.strip() for l in text.split("\n") if l.strip()]
-                        instrument = ""
-                        filed      = ""
-                        grantor    = ""
-                        grantee    = ""
-                        for line in lines:
-                            m = re.match(r"(\d{4}-\d+)", line)
-                            if m and not instrument:
-                                instrument = m.group(1)
-                            m2 = re.match(r"(\d{2}/\d{2}/\d{4})", line)
-                            if m2 and not filed:
-                                filed = m2.group(1)
-                        if not instrument:
-                            continue
-                        records.append({
-                            "doc_num"  : instrument,
-                            "doc_type" : doc_type,
-                            "cat"      : cat,
-                            "cat_label": cat_label,
-                            "filed"    : parse_date(filed) or filed,
-                            "grantor"  : grantor,
-                            "grantee"  : grantee,
-                            "legal"    : "",
-                            "amount"   : None,
-                            "clerk_url": BASE_URL,
-                            "_demo"    : False,
-                        })
-                    except Exception:
-                        continue
+                recs = await parse_result_rows(page, doc_type, cat, cat_label)
+                records.extend(recs)
             else:
                 break
 
