@@ -300,7 +300,6 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
 
         doc_type_escaped = doc_type.replace("'", "\\'")
 
-        # Fire AJAX search and stay on same page
         result = await page.evaluate(f"""
             () => new Promise((resolve) => {{
                 const payload = {{
@@ -312,6 +311,15 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                     resolve('jquery_not_available');
                     return;
                 }}
+
+                // Listen for page transition BEFORE firing search
+                $(document).one('pageshow', function(e) {{
+                    const pageId = $(e.target).attr('id') || 'unknown';
+                    const text = $(e.target).text().substring(0, 500);
+                    window._resultsPageText = text;
+                    window._resultsPageId = pageId;
+                }});
+
                 $.ajax({{
                     url: '/web/searchPost/DOCSEARCH1008S7',
                     type: 'POST',
@@ -319,48 +327,41 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
                     data: JSON.stringify(payload),
                     success: function(data) {{
                         window._searchResult = data;
-                        resolve('success');
+                        if (data && data.totalPages !== undefined) {{
+                            resolve('success:totalPages=' + data.totalPages);
+                        }} else {{
+                            resolve('success:data=' + JSON.stringify(data).substring(0, 200));
+                        }}
                     }},
                     error: function(xhr) {{
-                        window._searchResult = null;
-                        resolve('error:' + xhr.status);
+                        resolve('error:' + xhr.status + ':' + xhr.responseText.substring(0, 100));
                     }}
                 }});
             }})
         """)
         log.info(f"  {doc_type} ajax: {result}")
-
-        # Wait for DOM to update with results
         await page.wait_for_timeout(3000)
 
-        # Log body text to understand what the page shows now
-        body_text = await page.evaluate("document.body.innerText")
-        log.info(f"  {doc_type} body after ajax: {body_text[:2000]}")
+        # Check what the AJAX actually returned
+        search_data = await page.evaluate("JSON.stringify(window._searchResult || null)")
+        log.info(f"  {doc_type} searchResult: {str(search_data)[:500]}")
 
-        content = await page.content()
-        log.info(f"  {doc_type} page len={len(content)} url={page.url}")
+        results_text = await page.evaluate("window._resultsPageText || 'no_transition'")
+        log.info(f"  {doc_type} resultsPageText: {str(results_text)[:300]}")
 
-        if "No results" in content or "0 results" in body_text.lower():
-            log.info(f"  {doc_type}: 0 results")
-            return records
-
-        recs = await parse_result_rows(page, doc_type, cat, cat_label)
-        log.info(f"  {doc_type}: {len(recs)} rows found")
-        records.extend(recs)
-
-        # Next pages
-        while True:
-            next_btn = page.locator(
-                'button:has-text("Next"), [aria-label="Next"], [aria-label="Next page"]'
-            ).first
-            if await next_btn.count() > 0 and await next_btn.is_enabled():
-                await next_btn.click()
-                await page.wait_for_load_state("networkidle")
-                await page.wait_for_timeout(2000)
-                recs = await parse_result_rows(page, doc_type, cat, cat_label)
-                records.extend(recs)
-            else:
-                break
+        # The SPA keeps all pages in the DOM — find the active results page
+        # Look for any page div that is NOT the search form
+        all_pages_text = await page.evaluate("""
+            () => {
+                const pages = document.querySelectorAll('[data-role="page"]');
+                return Array.from(pages).map(p => ({
+                    id: p.id,
+                    active: p.classList.contains('ui-page-active'),
+                    text: p.innerText.substring(0, 200)
+                }));
+            }
+        """)
+        log.info(f"  {doc_type} all pages: {all_pages_text}")
 
     except Exception as e:
         log.warning(f"  Error {doc_type}: {e}\n{traceback.format_exc()}")
@@ -380,14 +381,16 @@ async def scrape_all(date_from: str, date_to: str) -> list:
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            for doc_type, (cat, cat_label) in DOC_TYPES.items():
-                try:
-                    recs = await scrape_doc_type(
-                        browser, doc_type, cat, cat_label, date_from, date_to
-                    )
-                    all_records.extend(recs)
-                except Exception as e:
-                    log.warning(f"  Failed {doc_type}: {e}")
+            # Only run first doc type for this debug run
+            first_doc = list(DOC_TYPES.items())[0]
+            doc_type, (cat, cat_label) = first_doc
+            try:
+                recs = await scrape_doc_type(
+                    browser, doc_type, cat, cat_label, date_from, date_to
+                )
+                all_records.extend(recs)
+            except Exception as e:
+                log.warning(f"  Failed {doc_type}: {e}")
             await browser.close()
     except Exception as e:
         log.error(f"Playwright error: {e}\n{traceback.format_exc()}")
