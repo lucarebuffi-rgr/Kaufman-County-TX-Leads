@@ -234,194 +234,58 @@ async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
     page = await context.new_page()
     try:
         await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
         await accept_disclaimer(page)
-        await page.wait_for_timeout(1000)
-
-        # Fill date range using keyboard input (React inputs need this)
-        date_inputs = await page.query_selector_all('input[placeholder="mm/dd/yyyy"]')
-        log.info(f"  Found {len(date_inputs)} date inputs")
-        if len(date_inputs) >= 1:
-            await date_inputs[0].click()
-            await page.keyboard.type(date_from, delay=50)
-            await page.keyboard.press("Tab")
-            await page.wait_for_timeout(500)
-            val0 = await date_inputs[0].get_attribute("value") or ""
-            log.info(f"  Date from: '{val0}'")
-        if len(date_inputs) >= 2:
-            await date_inputs[1].click()
-            await page.keyboard.type(date_to, delay=50)
-            await page.keyboard.press("Tab")
-            await page.wait_for_timeout(500)
-            val1 = await date_inputs[1].get_attribute("value") or ""
-            log.info(f"  Date to: '{val1}'")
-        await page.wait_for_timeout(1000)
-
-        # Click the Document Types dropdown to open it
-        doc_type_trigger = page.locator('text="Document Types", [placeholder*="Document"], [placeholder*="Type"]').first
-        if await doc_type_trigger.count() > 0:
-            await doc_type_trigger.click()
-            await page.wait_for_timeout(1000)
-
-        # Find and click the doc type option
-        option = page.locator(f'text="{doc_type}"').first
-        if await option.count() > 0:
-            await option.scroll_into_view_if_needed()
-            await option.click()
-            log.info(f"  Selected: {doc_type}")
-            await page.wait_for_timeout(500)
-        else:
-            # Try typing in search box to filter
-            search_input = page.locator('input[placeholder*="Search"]').first
-            if await search_input.count() > 0:
-                await search_input.click()
-                await page.keyboard.type(doc_type[:6], delay=50)
-                await page.wait_for_timeout(800)
-                option = page.locator(f'text="{doc_type}"').first
-                if await option.count() > 0:
-                    await option.click()
-                    log.info(f"  Selected via search: {doc_type}")
-                    await page.wait_for_timeout(500)
-                else:
-                    log.warning(f"  Not found: {doc_type}")
-                    await page.close()
-                    await context.close()
-                    return records
-            else:
-                log.warning(f"  No search box found for: {doc_type}")
-                # Log page content to debug
-                content = await page.content()
-                log.info(f"  Page snippet: {content[1000:1500]}")
-                await page.close()
-                await context.close()
-                return records
-
-        # Click Search via JavaScript
-        await page.wait_for_timeout(500)
-        clicked = await page.evaluate("""
-            () => {
-                const btns = document.querySelectorAll('button');
-                for (const btn of btns) {
-                    if (btn.textContent.trim() === 'Search') {
-                        btn.click();
-                        return true;
-                    }
-                }
-                return false;
-            }
-        """)
-        log.info(f"  Search clicked: {clicked}")
-        if not clicked:
-            log.warning(f"  Search button not found for {doc_type}")
-            await page.close()
-            await context.close()
-            return records
-
-        await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(3000)
 
-        # Parse pages
-        page_num = 1
-        while True:
-            await page.wait_for_timeout(1000)
-            content = await page.content()
+        # Log full page content to understand structure
+        content = await page.content()
+        log.info(f"  Page length: {len(content)}")
 
-            if "No results" in content or "0 Total Results" in content:
-                log.info(f"  {doc_type}: 0 results")
-                break
-
+        # Find all inputs on the page
+        all_inputs = await page.query_selector_all("input")
+        log.info(f"  Total inputs found: {len(all_inputs)}")
+        for inp in all_inputs[:10]:
             try:
-                total_el = await page.query_selector(
-                    '[class*="total"], [class*="count"], [class*="showing"]'
-                )
-                if total_el:
-                    log.info(f"  {doc_type} p{page_num}: {await total_el.inner_text()}")
+                itype = await inp.get_attribute("type") or ""
+                iname = await inp.get_attribute("name") or ""
+                iid   = await inp.get_attribute("id") or ""
+                iph   = await inp.get_attribute("placeholder") or ""
+                icls  = await inp.get_attribute("class") or ""
+                log.info(f"  Input: type={itype} name={iname} id={iid} placeholder={iph} class={icls[:30]}")
             except Exception:
                 pass
 
-            rows = await page.query_selector_all(
-                '.document-row, [class*="document-row"], [class*="result-item"]'
-            )
-            if not rows:
-                rows = await page.query_selector_all('tbody tr')
-            if not rows:
-                log.info(f"  {doc_type} p{page_num}: no rows, snippet={content[1500:2000]}")
-                break
+        # Find all buttons
+        all_buttons = await page.query_selector_all("button, input[type=submit], input[type=button]")
+        log.info(f"  Total buttons: {len(all_buttons)}")
+        for btn in all_buttons[:5]:
+            try:
+                btxt = await btn.inner_text()
+                bval = await btn.get_attribute("value") or ""
+                bid  = await btn.get_attribute("id") or ""
+                log.info(f"  Button: text={btxt.strip()[:30]} value={bval} id={bid}")
+            except Exception:
+                pass
 
-            for row in rows:
-                try:
-                    text = await row.inner_text()
-                    lines = [l.strip() for l in text.split("\n") if l.strip()]
-                    instrument = ""
-                    filed      = ""
-                    grantor    = ""
-                    grantee    = ""
+        # Find select elements
+        all_selects = await page.query_selector_all("select")
+        log.info(f"  Total selects: {len(all_selects)}")
+        for sel in all_selects[:5]:
+            try:
+                sid = await sel.get_attribute("id") or ""
+                sname = await sel.get_attribute("name") or ""
+                log.info(f"  Select: id={sid} name={sname}")
+            except Exception:
+                pass
 
-                    for line in lines:
-                        m = re.match(r"(\d{4}-\d+)", line)
-                        if m and not instrument:
-                            instrument = m.group(1)
-                        m2 = re.match(r"(\d{2}/\d{2}/\d{4})", line)
-                        if m2 and not filed:
-                            filed = m2.group(1)
-
-                    for sel, attr in [('[class*="grantor"]', "grantor"),
-                                      ('[class*="grantee"]', "grantee")]:
-                        el = await row.query_selector(sel)
-                        if el:
-                            val = (await el.inner_text()).strip()
-                            if attr == "grantor":
-                                grantor = val
-                            else:
-                                grantee = val
-
-                    if not grantor and not grantee:
-                        for i, line in enumerate(lines):
-                            if re.match(r"\d{2}/\d{2}/\d{4}", line):
-                                if i + 1 < len(lines) and len(lines[i+1]) > 2:
-                                    grantor = lines[i + 1]
-                                if i + 2 < len(lines) and len(lines[i+2]) > 2:
-                                    grantee = lines[i + 2]
-                                break
-
-                    if not instrument:
-                        continue
-
-                    records.append({
-                        "doc_num"  : instrument,
-                        "doc_type" : doc_type,
-                        "cat"      : cat,
-                        "cat_label": cat_label,
-                        "filed"    : parse_date(filed) or filed,
-                        "grantor"  : grantor,
-                        "grantee"  : grantee,
-                        "legal"    : "",
-                        "amount"   : None,
-                        "clerk_url": BASE_URL,
-                        "_demo"    : False,
-                    })
-                except Exception:
-                    continue
-
-            log.info(f"  {doc_type} p{page_num}: {len(records)} records so far")
-
-            next_btn = page.locator(
-                'button:has-text("Next"), [aria-label="Next"], [aria-label="Next page"]'
-            ).first
-            if await next_btn.count() > 0 and await next_btn.is_enabled():
-                await next_btn.click()
-                await page.wait_for_load_state("networkidle")
-                page_num += 1
-            else:
-                break
-
+        log.info(f"  {doc_type}: 0 rows (debug)")
     except Exception as e:
         log.warning(f"  Error {doc_type}: {e}\n{traceback.format_exc()}")
     finally:
         await page.close()
         await context.close()
 
-    log.info(f"  {doc_type} total: {len(records)}")
     return records
 
 
