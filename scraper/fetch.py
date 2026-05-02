@@ -19,12 +19,6 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
-try:
-    from playwright.async_api import async_playwright
-    HAS_PLAYWRIGHT = True
-except ImportError:
-    HAS_PLAYWRIGHT = False
-
 import httpx
 
 logging.basicConfig(
@@ -209,248 +203,117 @@ def build_parcel_lookup() -> dict:
     return lookup
 
 
-async def accept_disclaimer(page):
-    try:
-        for _ in range(3):
-            btn = page.locator('button:has-text("I Accept"), a:has-text("I Accept")')
-            if await btn.count() > 0:
-                await btn.first.click()
-                await page.wait_for_load_state("networkidle")
-                await page.wait_for_timeout(1000)
-                log.info("  Accepted disclaimer")
-                return
-            await page.wait_for_timeout(1000)
-    except Exception:
-        pass
-
-
-async def scrape_doc_type(browser, doc_type: str, cat: str, cat_label: str,
-                          date_from: str, date_to: str) -> list:
+def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str) -> list:
+    """Parse search results from HTML response."""
     records = []
-    context = await browser.new_context(
-        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
-    page = await context.new_page()
     try:
-        await page.goto(BASE_URL, timeout=60_000, wait_until="networkidle")
-        await page.wait_for_timeout(3000)
-        await accept_disclaimer(page)
-        await page.wait_for_timeout(3000)
+        # Find all instrument numbers (format: 2026-XXXXXXX)
+        instruments = re.findall(r'(\d{4}-\d{5,})', html)
+        # Find all dates
+        dates = re.findall(r'(\d{2}/\d{2}/\d{4})', html)
+        # Find grantor/grantee patterns
+        grantor_matches = re.findall(
+            r'(?:Grantor|GRANTOR)[:\s]+([A-Z][A-Z\s,\.]+?)(?:\n|<|Grantee)',
+            html, re.IGNORECASE
+        )
+        grantee_matches = re.findall(
+            r'(?:Grantee|GRANTEE)[:\s]+([A-Z][A-Z\s,\.]+?)(?:\n|<|Grantor|Recording)',
+            html, re.IGNORECASE
+        )
 
-        # Set dates via JavaScript
-        await page.evaluate(f"""
-            () => {{
-                const startEl = document.getElementById('field_RecDateID_DOT_StartDate');
-                const endEl   = document.getElementById('field_RecDateID_DOT_EndDate');
-                if (startEl) {{
-                    startEl.value = '{date_from}';
-                    startEl.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    startEl.dispatchEvent(new Event('input',  {{bubbles: true}}));
-                }}
-                if (endEl) {{
-                    endEl.value = '{date_to}';
-                    endEl.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    endEl.dispatchEvent(new Event('input',  {{bubbles: true}}));
-                }}
-            }}
-        """)
-        await page.wait_for_timeout(500)
-        val_start = await page.evaluate("document.getElementById('field_RecDateID_DOT_StartDate')?.value || ''")
-        val_end   = await page.evaluate("document.getElementById('field_RecDateID_DOT_EndDate')?.value || ''")
-        log.info(f"  Dates set: {val_start} → {val_end}")
+        log.info(f"  Found {len(instruments)} instruments, {len(dates)} dates, "
+                 f"{len(grantor_matches)} grantors, {len(grantee_matches)} grantees")
 
-        # Expand Document Types collapsible panel
-        expanded = await page.evaluate("""
-            () => {
-                const headers = document.querySelectorAll(
-                    'h1, h2, h3, h4, [data-role="collapsible"] h1, [data-role="collapsible"] h2, [data-role="collapsible"] h3'
-                );
-                for (const h of headers) {
-                    if (h.textContent.includes('Document')) {
-                        h.click();
-                        return 'clicked header: ' + h.textContent.trim().substring(0, 50);
-                    }
-                }
-                const collapsibles = document.querySelectorAll('[data-role="collapsible"]');
-                const texts = Array.from(collapsibles).map(c => c.textContent.trim().substring(0, 40));
-                return 'no header found. collapsibles: ' + JSON.stringify(texts);
-            }
-        """)
-        log.info(f"  Expand result: {expanded}")
-        await page.wait_for_timeout(1000)
-
-        # Find and click the doc type
-        found = await page.evaluate(f"""
-            () => {{
-                const allElements = document.querySelectorAll('li, label, a, span');
-                for (const el of allElements) {{
-                    if (el.textContent.trim() === '{doc_type}') {{
-                        el.click();
-                        return 'clicked: ' + el.tagName + ' class=' + el.className;
-                    }}
-                }}
-                const lis = document.querySelectorAll('li');
-                const texts = Array.from(lis).map(li => li.textContent.trim().substring(0, 60));
-                return 'not_found. lis: ' + JSON.stringify(texts.slice(0, 30));
-            }}
-        """)
-        log.info(f"  Doc type result: {found}")
-
-        if "not_found" in found:
-            await page.close()
-            await context.close()
-            return records
-
-        await page.wait_for_timeout(500)
-
-        # Click Search via JavaScript
-        clicked = await page.evaluate("""
-            () => {
-                const btns = document.querySelectorAll('button, input[type=submit], input[type=button], a');
-                for (const btn of btns) {
-                    const txt = (btn.textContent || btn.value || '').trim();
-                    if (txt === 'Search') {
-                        btn.click();
-                        return true;
-                    }
-                }
-                // Log all button texts
-                const allBtns = Array.from(document.querySelectorAll('button, input[type=submit], a[data-role=button]'));
-                return 'not found. buttons: ' + JSON.stringify(allBtns.map(b => (b.textContent || b.value || '').trim().substring(0, 30)));
-            }
-        """)
-        log.info(f"  Search clicked: {clicked}")
-
-        if clicked is not True:
-            await page.close()
-            await context.close()
-            return records
-
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(3000)
-
-        # Parse pages
-        page_num = 1
-        while True:
-            await page.wait_for_timeout(1000)
-            content = await page.content()
-
-            if "No results" in content or "0 Total Results" in content:
-                log.info(f"  {doc_type}: 0 results")
-                break
-
-            try:
-                total_el = await page.query_selector(
-                    '[class*="total"], [class*="count"], [class*="showing"]'
-                )
-                if total_el:
-                    log.info(f"  {doc_type} p{page_num}: {await total_el.inner_text()}")
-            except Exception:
-                pass
-
-            rows = await page.query_selector_all(
-                '.document-row, [class*="document-row"], [class*="result-item"]'
-            )
-            if not rows:
-                rows = await page.query_selector_all('tbody tr')
-            if not rows:
-                log.info(f"  {doc_type} p{page_num}: no rows, snippet={content[1500:2000]}")
-                break
-
-            for row in rows:
-                try:
-                    text  = await row.inner_text()
-                    lines = [l.strip() for l in text.split("\n") if l.strip()]
-
-                    instrument = ""
-                    filed      = ""
-                    grantor    = ""
-                    grantee    = ""
-
-                    for line in lines:
-                        m = re.match(r"(\d{4}-\d+)", line)
-                        if m and not instrument:
-                            instrument = m.group(1)
-                        m2 = re.match(r"(\d{2}/\d{2}/\d{4})", line)
-                        if m2 and not filed:
-                            filed = m2.group(1)
-
-                    for sel, attr in [('[class*="grantor"]', "grantor"),
-                                      ('[class*="grantee"]', "grantee")]:
-                        el = await row.query_selector(sel)
-                        if el:
-                            val = (await el.inner_text()).strip()
-                            if attr == "grantor":
-                                grantor = val
-                            else:
-                                grantee = val
-
-                    if not grantor and not grantee:
-                        for i, line in enumerate(lines):
-                            if re.match(r"\d{2}/\d{2}/\d{4}", line):
-                                if i + 1 < len(lines) and len(lines[i+1]) > 2:
-                                    grantor = lines[i + 1]
-                                if i + 2 < len(lines) and len(lines[i+2]) > 2:
-                                    grantee = lines[i + 2]
-                                break
-
-                    if not instrument:
-                        continue
-
-                    records.append({
-                        "doc_num"  : instrument,
-                        "doc_type" : doc_type,
-                        "cat"      : cat,
-                        "cat_label": cat_label,
-                        "filed"    : parse_date(filed) or filed,
-                        "grantor"  : grantor,
-                        "grantee"  : grantee,
-                        "legal"    : "",
-                        "amount"   : None,
-                        "clerk_url": BASE_URL,
-                        "_demo"    : False,
-                    })
-                except Exception:
-                    continue
-
-            log.info(f"  {doc_type} p{page_num}: {len(records)} records so far")
-
-            next_btn = page.locator(
-                'button:has-text("Next"), [aria-label="Next"], [aria-label="Next page"]'
-            ).first
-            if await next_btn.count() > 0 and await next_btn.is_enabled():
-                await next_btn.click()
-                await page.wait_for_load_state("networkidle")
-                page_num += 1
-            else:
-                break
-
-    except Exception as e:
-        log.warning(f"  Error {doc_type}: {e}\n{traceback.format_exc()}")
-    finally:
-        await page.close()
-        await context.close()
-
-    log.info(f"  {doc_type} total: {len(records)}")
+        seen = set()
+        for i, instr in enumerate(instruments):
+            if instr in seen:
+                continue
+            seen.add(instr)
+            filed   = dates[i] if i < len(dates) else ""
+            grantor = grantor_matches[i].strip() if i < len(grantor_matches) else ""
+            grantee = grantee_matches[i].strip() if i < len(grantee_matches) else ""
+            records.append({
+                "doc_num"  : instr,
+                "doc_type" : doc_type,
+                "cat"      : cat,
+                "cat_label": cat_label,
+                "filed"    : parse_date(filed) or filed,
+                "grantor"  : grantor,
+                "grantee"  : grantee,
+                "legal"    : "",
+                "amount"   : None,
+                "clerk_url": BASE_URL,
+                "_demo"    : False,
+            })
+    except Exception:
+        log.error(f"Parse error:\n{traceback.format_exc()}")
     return records
 
 
 async def scrape_all(date_from: str, date_to: str) -> list:
-    if not HAS_PLAYWRIGHT:
-        log.error("Playwright not available!")
-        return []
     all_records = []
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        },
+        timeout=60
+    ) as client:
+        # Load initial page
+        r = await client.get(BASE_URL)
+        log.info(f"  Initial: {r.status_code} url={r.url}")
+
+        # Accept disclaimer if present
+        if "disclaimer" in str(r.url).lower() or "accept" in r.text.lower():
+            # Find form action
+            action_m = re.search(r'<form[^>]+action=["\']([^"\']+)["\']', r.text, re.I)
+            if action_m:
+                action = action_m.group(1)
+                if not action.startswith("http"):
+                    action = "https://kaufmancountytx-web.tylerhost.net" + action
+                # Find all hidden inputs
+                hidden = dict(re.findall(
+                    r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']',
+                    r.text, re.I
+                ))
+                hidden["acceptDisclaimer"] = "true"
+                r2 = await client.post(action, data=hidden)
+                log.info(f"  Disclaimer: {r2.status_code} url={r2.url}")
+            else:
+                r2 = await client.get(BASE_URL)
+                log.info(f"  No form action found, re-GET: {r2.status_code}")
+
+        # Log page structure
+        log.info(f"  Page after disclaimer: len={len(r.text)}")
+        log.info(f"  Snippet 2000-3000: {r.text[2000:3000]}")
+
+        # Try searching for each doc type
         for doc_type, (cat, cat_label) in DOC_TYPES.items():
             try:
-                recs = await scrape_doc_type(browser, doc_type, cat, cat_label,
-                                             date_from, date_to)
-                all_records.extend(recs)
+                # Build search form data
+                search_data = {
+                    "field_RecDateID_DOT_StartDate": date_from,
+                    "field_RecDateID_DOT_EndDate":   date_to,
+                    "field_DocTypeID":               doc_type,
+                }
+
+                # Also try with different field names
+                resp = await client.post(BASE_URL, data=search_data)
+                log.info(f"  {doc_type}: {resp.status_code} len={len(resp.text)}")
+                log.info(f"  Snippet: {resp.text[1000:1500]}")
+
+                if resp.status_code == 200 and len(resp.text) > 5000:
+                    recs = parse_results_html(resp.text, doc_type, cat, cat_label)
+                    if recs:
+                        log.info(f"  {doc_type}: {len(recs)} records parsed")
+                        all_records.extend(recs)
+
             except Exception as e:
-                log.warning(f"  Failed {doc_type}: {e}")
-        await browser.close()
+                log.warning(f"  {doc_type} failed: {e}")
+
     return all_records
 
 
