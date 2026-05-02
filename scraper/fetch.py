@@ -29,6 +29,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 BASE_URL      = "https://kaufmancountytx-web.tylerhost.net/web/search/DOCSEARCH1008S7"
+BASE_HOST     = "https://kaufmancountytx-web.tylerhost.net"
 CAD_ZIP_URL   = "https://kaufman-cad.org/wp-content/uploads/2026/04/2026-Preliminary-Real-Roll-w-Improvement-Export.zip"
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "14"))
 
@@ -203,56 +204,8 @@ def build_parcel_lookup() -> dict:
     return lookup
 
 
-def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str) -> list:
-    """Parse search results from HTML response."""
-    records = []
-    try:
-        # Find all instrument numbers (format: 2026-XXXXXXX)
-        instruments = re.findall(r'(\d{4}-\d{5,})', html)
-        # Find all dates
-        dates = re.findall(r'(\d{2}/\d{2}/\d{4})', html)
-        # Find grantor/grantee patterns
-        grantor_matches = re.findall(
-            r'(?:Grantor|GRANTOR)[:\s]+([A-Z][A-Z\s,\.]+?)(?:\n|<|Grantee)',
-            html, re.IGNORECASE
-        )
-        grantee_matches = re.findall(
-            r'(?:Grantee|GRANTEE)[:\s]+([A-Z][A-Z\s,\.]+?)(?:\n|<|Grantor|Recording)',
-            html, re.IGNORECASE
-        )
-
-        log.info(f"  Found {len(instruments)} instruments, {len(dates)} dates, "
-                 f"{len(grantor_matches)} grantors, {len(grantee_matches)} grantees")
-
-        seen = set()
-        for i, instr in enumerate(instruments):
-            if instr in seen:
-                continue
-            seen.add(instr)
-            filed   = dates[i] if i < len(dates) else ""
-            grantor = grantor_matches[i].strip() if i < len(grantor_matches) else ""
-            grantee = grantee_matches[i].strip() if i < len(grantee_matches) else ""
-            records.append({
-                "doc_num"  : instr,
-                "doc_type" : doc_type,
-                "cat"      : cat,
-                "cat_label": cat_label,
-                "filed"    : parse_date(filed) or filed,
-                "grantor"  : grantor,
-                "grantee"  : grantee,
-                "legal"    : "",
-                "amount"   : None,
-                "clerk_url": BASE_URL,
-                "_demo"    : False,
-            })
-    except Exception:
-        log.error(f"Parse error:\n{traceback.format_exc()}")
-    return records
-
-
 async def scrape_all(date_from: str, date_to: str) -> list:
     all_records = []
-    base = "https://kaufmancountytx-web.tylerhost.net"
     async with httpx.AsyncClient(
         follow_redirects=True,
         headers={
@@ -267,23 +220,47 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         # Accept disclaimer
         await client.get(BASE_URL)
         await client.post(
-            f"{base}/web/user/disclaimer",
+            BASE_HOST + "/web/user/disclaimer",
             data={"disclaimer": "accept", "submit": "Accept"}
         )
         log.info(f"  Cookies: {list(client.cookies.keys())}")
 
-        # Get document types to confirm correct names
-        dt_resp = await client.get(f"{base}/web/search/documentTypes/DOCSEARCH1008S7")
-        log.info(f"  Doc types: {dt_resp.status_code} snippet={dt_resp.text[:500]}")
+        # Get doc types to verify names
+        dt_resp = await client.get(BASE_HOST + "/web/search/documentTypes/DOCSEARCH1008S7")
+        log.info(f"  Doc types endpoint: {dt_resp.status_code} len={len(dt_resp.text)}")
+        log.info(f"  Doc types snippet: {dt_resp.text[:1000]}")
 
         for doc_type, (cat, cat_label) in DOC_TYPES.items():
             try:
-                # POST search
+                # Build payload as a regular dict — no f-string
+                payload = {
+                    "field_RecDateID_DOT_StartDate": date_from,
+                    "field_RecDateID_DOT_EndDate": date_to,
+                    "field_DocTypeID": doc_type,
+                }
+
+                # POST to searchPost endpoint
                 search_resp = await client.post(
-                    f"{base}/web/searchPost/DOCSEARCH1008S7",
-                    json={
-                        "field_RecDateID_DOT_StartDate": date_from,
-                        "field_RecDateID_DOT_EndDate":   date_to,
+                    BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
+                    json=payload
+                )
+                log.info(f"  {doc_type} searchPost: {search_resp.status_code} len={len(search_resp.text)}")
+                log.info(f"  Snippet: {search_resp.text[:300]}")
+
+                # GET results
+                results_resp = await client.get(
+                    BASE_HOST + "/web/searchResults/DOCSEARCH1008S7"
+                )
+                log.info(f"  {doc_type} results: {results_resp.status_code} len={len(results_resp.text)}")
+                log.info(f"  Results snippet: {results_resp.text[:500]}")
+
+                # Only run first doc type for this debug run
+                break
+
+            except Exception as e:
+                log.warning(f"  {doc_type} failed: {e}")
+
+    return all_records
 
 
 def generate_demo_records(date_from: str, date_to: str) -> list:
