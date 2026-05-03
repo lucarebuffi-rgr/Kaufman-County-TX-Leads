@@ -197,8 +197,13 @@ def build_parcel_lookup() -> dict:
                 "mail_state":   mail_state,
                 "mail_zip":     mail_zip,
             }
-            for variant in name_variants(owner_name):
-                lookup[variant] = parcel
+            # Index each co-owner separately
+            parts = re.split(r'\s*&\s*', owner_name)
+            for part in parts:
+                part = part.strip()
+                if part and not is_entity(part):
+                    for variant in name_variants(part):
+                        lookup[variant] = parcel
             total += 1
             if total % 10000 == 0:
                 log.info(f"  Processed {total:,} parcels ...")
