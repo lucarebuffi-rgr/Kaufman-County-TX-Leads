@@ -69,16 +69,16 @@ ENTITY_FILTERS = (
     "CITY OF TERRELL", "CITY OF KAUFMAN", "CITY OF FORNEY"
 )
 
+# CAD fixed-width column positions
 ACCT_S,  ACCT_E  = 596,  608
 NAME_S,  NAME_E  = 608,  658
 ADDR_S,  ADDR_E  = 753,  803
 CITY_S,  CITY_E  = 873,  923
 STAT_S,  STAT_E  = 923,  925
 ZIP_S,   ZIP_E   = 978,  987
-SNUM_S,  SNUM_E  = 4443, 4463
-SITUS_S, SITUS_E = 1049, 1099
-SCITY_S, SCITY_E = 1109, 1139
-SZIP_S,  SZIP_E  = 1139, 1149
+SITUS_S, SITUS_E = 4621, 4671
+SCITY_S, SCITY_E = 4671, 4721
+SZIP_S,  SZIP_E  = 4781, 4791
 PCLS_S,  PCLS_E  = 2731, 2741
 
 
@@ -180,9 +180,9 @@ def build_parcel_lookup() -> dict:
             mail_city  = line[CITY_S:CITY_E].strip()
             mail_state = line[STAT_S:STAT_E].strip() or "TX"
             mail_zip   = line[ZIP_S:ZIP_E].strip()[:5]
-            situs_st   = line[SITUS_S:SITUS_E].strip()
-            situs_city = line[SCITY_S:SCITY_E].strip()
-            situs_zip  = line[SZIP_S:SZIP_E].strip()[:5]
+            situs_st   = line[SITUS_S:SITUS_E].strip() if len(line) > SITUS_E else ""
+            situs_city = line[SCITY_S:SCITY_E].strip() if len(line) > SCITY_E else ""
+            situs_zip  = line[SZIP_S:SZIP_E].strip()[:5] if len(line) > SZIP_E else ""
             parcel = {
                 "prop_address": situs_st,
                 "prop_city":    situs_city or "Kaufman",
@@ -221,7 +221,6 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
         for item in items:
             full_text = item.get_text(" ", strip=True)
 
-            # Instrument number
             m = re.search(r"(\d{4}-\d+)", full_text)
             if not m:
                 continue
@@ -230,7 +229,6 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
                 continue
             seen.add(instrument)
 
-            # Recording date
             filed = ""
             m2 = re.search(r"(\d{2}/\d{2}/\d{4})", full_text)
             if m2:
@@ -240,7 +238,6 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
             grantee = ""
             legal   = ""
 
-            # Each column is a searchResultFourColumn div
             columns = item.find_all("div", class_="searchResultFourColumn")
             for col in columns:
                 ul = col.find("ul", class_="selfServiceSearchResultColumn")
@@ -249,9 +246,7 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
                 lis = ul.find_all("li")
                 if not lis:
                     continue
-                # First li is the label
                 label = lis[0].get_text(strip=True).lower()
-                # Second li contains the value in <b> tag
                 val = ""
                 if len(lis) > 1:
                     b = lis[1].find("b")
@@ -350,11 +345,11 @@ async def scrape_all(date_from: str, date_to: str) -> list:
                         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                     }
                 )
-                log.info(f"  {doc_type} POST: {post_resp.status_code} len={len(post_resp.text)}")
+                log.info(f"  {doc_type} POST: {post_resp.status_code}")
 
                 try:
-                    post_json    = post_resp.json()
-                    total_pages  = post_json.get("totalPages", 0)
+                    post_json   = post_resp.json()
+                    total_pages = post_json.get("totalPages", 0)
                     log.info(f"  {doc_type} totalPages={total_pages}")
                 except Exception:
                     log.warning(f"  {doc_type} POST not JSON")
@@ -372,11 +367,7 @@ async def scrape_all(date_from: str, date_to: str) -> list:
                     )
                     log.info(f"  {doc_type} GET p{pg}: {get_resp.status_code} len={len(get_resp.text)}")
 
-                    # Debug: log raw HTML for first page of LIS PENDENS only
                     debug = (doc_type == "LIS PENDENS" and pg == 1)
-                    if debug:
-                        log.info(f"  LIS PENDENS raw HTML: {get_resp.text[:3000]}")
-
                     if get_resp.status_code == 200 and len(get_resp.text) > 500:
                         recs = parse_results_html(
                             get_resp.text, doc_type, cat, cat_label, debug=debug
