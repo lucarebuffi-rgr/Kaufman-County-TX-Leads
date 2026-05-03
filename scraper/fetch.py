@@ -242,31 +242,26 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
             grantee = ""
             legal   = ""
 
-            # Find the ui-grid-b div which contains the data columns
-            grid = item.find("div", class_=re.compile(r"ui-grid-b"))
-            if grid:
-                blocks = grid.find_all("div", class_=re.compile(r"ui-block-"), recursive=False)
-                for block in blocks:
-                    # Get the label (first p or span with label class, or first line)
-                    label_el = block.find(["p", "span", "div"],
-                                         class_=re.compile(r"label|header|fieldLabel", re.I))
-                    block_lines = [l.strip() for l in block.get_text("\n").split("\n")
-                                   if l.strip()]
-                    if not block_lines:
-                        continue
-
-                    label_text = label_el.get_text(strip=True) if label_el else block_lines[0]
-                    # Value lines are everything after the label
-                    val_lines = block_lines[1:] if len(block_lines) > 1 else block_lines
-
-                    ll = label_text.lower()
-                    if "grantor" in ll:
-                        # Take only the first name (skip agent/attorney lines)
-                        grantor = val_lines[0] if val_lines else ""
-                    elif "grantee" in ll:
-                        grantee = val_lines[0] if val_lines else ""
-                    elif "legal" in ll:
-                        legal = " ".join(val_lines)
+            # Find the selfServiceSearchRowRight which contains the data
+            row_right = item.find("div", class_="selfServiceSearchRowRight")
+            if row_right:
+                # Find all ui-grid blocks inside
+                grid = row_right.find("div", class_=re.compile(r"ui-grid"))
+                if grid:
+                    blocks = grid.find_all("div", class_=re.compile(r"ui-block-[a-d]$"))
+                    for block in blocks:
+                        block_lines = [l.strip() for l in block.get_text("\n").split("\n")
+                                      if l.strip()]
+                        if not block_lines:
+                            continue
+                        label_text = block_lines[0].lower()
+                        val_lines  = block_lines[1:]
+                        if "grantor" in label_text:
+                            grantor = val_lines[0] if val_lines else ""
+                        elif "grantee" in label_text:
+                            grantee = val_lines[0] if val_lines else ""
+                        elif "legal" in label_text:
+                            legal = " ".join(val_lines)
 
             # Fallback if grid parsing didn't work
             if not grantor and not grantee:
