@@ -210,7 +210,6 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
     records = []
     try:
         soup = BeautifulSoup(html, "html.parser")
-
         result_list = soup.find("ul", class_="selfServiceSearchResultList")
         if not result_list:
             log.warning(f"  {doc_type}: no selfServiceSearchResultList found")
@@ -242,44 +241,32 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
             grantee = ""
             legal   = ""
 
-            # Find the selfServiceSearchRowRight which contains the data
-            row_right = item.find("div", class_="selfServiceSearchRowRight")
-            if row_right:
-                # Find all ui-grid blocks inside
-                grid = row_right.find("div", class_=re.compile(r"ui-grid"))
-                if grid:
-                    blocks = grid.find_all("div", class_=re.compile(r"ui-block-[a-d]$"))
-                    for block in blocks:
-                        block_lines = [l.strip() for l in block.get_text("\n").split("\n")
-                                      if l.strip()]
-                        if not block_lines:
-                            continue
-                        label_text = block_lines[0].lower()
-                        val_lines  = block_lines[1:]
-                        if "grantor" in label_text:
-                            grantor = val_lines[0] if val_lines else ""
-                        elif "grantee" in label_text:
-                            grantee = val_lines[0] if val_lines else ""
-                        elif "legal" in label_text:
-                            legal = " ".join(val_lines)
+            # Each column is a searchResultFourColumn div
+            columns = item.find_all("div", class_="searchResultFourColumn")
+            for col in columns:
+                ul = col.find("ul", class_="selfServiceSearchResultColumn")
+                if not ul:
+                    continue
+                lis = ul.find_all("li")
+                if not lis:
+                    continue
+                # First li is the label
+                label = lis[0].get_text(strip=True).lower()
+                # Second li contains the value in <b> tag
+                val = ""
+                if len(lis) > 1:
+                    b = lis[1].find("b")
+                    val = b.get_text(strip=True) if b else lis[1].get_text(strip=True)
 
-            # Fallback if grid parsing didn't work
-            if not grantor and not grantee:
-                lines = [l.strip() for l in full_text.split("  ") if l.strip()]
-                for i, line in enumerate(lines):
-                    ll = line.lower()
-                    if ll == "grantor" or ll.startswith("grantor ("):
-                        if i + 1 < len(lines):
-                            grantor = lines[i + 1]
-                    elif ll == "grantee" or ll.startswith("grantee ("):
-                        if i + 1 < len(lines):
-                            grantee = lines[i + 1]
-                    elif "legal description" in ll:
-                        if i + 1 < len(lines):
-                            legal = lines[i + 1]
+                if "grantor" in label:
+                    grantor = val
+                elif "grantee" in label:
+                    grantee = val
+                elif "legal" in label:
+                    legal = val
 
-            if debug and len(seen) <= 1:
-                        log.info(f"  ITEM HTML: {str(item)[:5000]}")
+            if debug:
+                log.info(f"  PARSED: {instrument} | grantor={grantor} | grantee={grantee}")
 
             records.append({
                 "doc_num"  : instrument,
@@ -287,9 +274,9 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
                 "cat"      : cat,
                 "cat_label": cat_label,
                 "filed"    : parse_date(filed) or filed,
-                "grantor"  : grantor.strip(),
-                "grantee"  : grantee.strip(),
-                "legal"    : legal.strip(),
+                "grantor"  : grantor,
+                "grantee"  : grantee,
+                "legal"    : legal,
                 "amount"   : None,
                 "clerk_url": BASE_URL,
                 "_demo"    : False,
