@@ -35,25 +35,26 @@ CAD_ZIP_URL   = "https://kaufman-cad.org/wp-content/uploads/2026/04/2026-Prelimi
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "14"))
 
 DOC_TYPES = {
-    "LIS PENDENS"                              : ("pre_foreclosure", "Lis Pendens",         "LP"),
-    "FEDERAL TAX LIEN"                         : ("lien",            "Federal Tax Lien",    "FTL"),
-    "STATE TAX LIEN"                           : ("lien",            "State Tax Lien",      "STL"),
-    "ABSTRACT OF JUDGMENT"                     : ("judgment",        "Abstract of Judgment","AOJ"),
-    "JUDGMENT"                                 : ("judgment",        "Judgment",            "J"),
-    "PROBATE PROCEEDINGS, CERTIFIED COPY"      : ("probate",         "Probate",             "PP"),
-    "AFFIDAVIT OF HEIRSHIP"                    : ("probate",         "Affidavit of Heirship","AOH"),
-    "LIEN AFFIDAVIT/CLAIM/NOTICE"              : ("lien",            "Lien",                "LA"),
-    "HOSPITAL LIEN"                            : ("lien",            "Hospital Lien",       "HL"),
+    "LIS PENDENS"                               : ("pre_foreclosure", "Lis Pendens",         "LP"),
+    "FEDERAL TAX LIEN"                          : ("lien",            "Federal Tax Lien",    "FTL"),
+    "STATE TAX LIEN"                            : ("lien",            "State Tax Lien",      "STL"),
+    "ABSTRACT OF JUDGMENT"                      : ("judgment",        "Abstract of Judgment","AOJ"),
+    "JUDGMENT"                                  : ("judgment",        "Judgment",            "J"),
+    "PROBATE PROCEEDINGS, CERTIFIED COPY"       : ("probate",         "Probate",             "PP"),
+    "AFFIDAVIT OF HEIRSHIP"                     : ("probate",         "Affidavit of Heirship","AFH"),
+    "LIEN AFFIDAVIT/CLAIM/NOTICE"               : ("lien",            "Lien",                "LA"),
+    "HOSPITAL LIEN"                             : ("lien",            "Hospital Lien",       "HL"),
     "CHILD SUPPORT LIEN"                       : ("lien",            "Child Support Lien",  "CSL"),
-    "ASSESSMENT LIEN BY HOMEOWNERS ASSOCIATION": ("lien",            "HOA Lien",            "AL"),
-    "DIVORCE PROCEEDINGS, CERTIFIED COPY"      : ("other",           "Divorce Decree",      "DP"),
-    "MEDICAL LIEN"                             : ("lien",            "Medical Lien",        "ML"),
+    "ASSSESSMENT LIEN BY HOMEOWNERS ASSOCIATION": ("lien",            "HOA Lien",            "AL"),
+    "DIVORCE PROCEEDINGS, CERTIFIED COPY"       : ("other",           "Divorce Decree",      "DP"),
+    "MEDICAL LIEN"                              : ("lien",            "Medical Lien",        "ML"),
+    "QUIT CLAIM DEED"                           : ("other",           "Quit Claim Deed",     "QCD"),
 }
 
 GRANTEE_IS_OWNER = {
     "LIEN AFFIDAVIT/CLAIM/NOTICE", "FEDERAL TAX LIEN", "STATE TAX LIEN",
     "JUDGMENT", "ABSTRACT OF JUDGMENT", "HOSPITAL LIEN", "MEDICAL LIEN",
-    "CHILD SUPPORT LIEN", "ASSESSMENT LIEN BY HOMEOWNERS ASSOCIATION"
+    "CHILD SUPPORT LIEN", "ASSSESSMENT LIEN BY HOMEOWNERS ASSOCIATION"
 }
 
 NAME_SUFFIXES = {"JR", "SR", "II", "III", "IV", "V", "ESQ", "TRUSTEE", "TR",
