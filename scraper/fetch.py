@@ -66,7 +66,10 @@ ENTITY_FILTERS = (
     "MORTGAGE", "FINANCIAL", "INVESTMENT", "PROPERTIES", "REALTY", "HOLDINGS",
     "PARTNERS", "GROUP", "SERVICES", "MANAGEMENT", "SOLUTIONS", "ENTERPRISES",
     "N/A", "UNKNOWN", "PUBLIC", "ATTY GEN", "ATTY/GEN", "KAUFMAN COUNTY",
-    "CITY OF TERRELL", "CITY OF KAUFMAN", "CITY OF FORNEY"
+    "CITY OF TERRELL", "CITY OF KAUFMAN", "CITY OF FORNEY",
+    "BANK", "CREDIT UNION", "HOUSING", "LENDING", "LOAN", "CAPITAL",
+    "FUNDING", "ACQUISITION", "ASSET", "PORTFOLIO", "RECOVERY",
+    "ANNUITY", "INSURANCE", "PENSION", "DEVELOPMENT",
 )
 
 # CAD fixed-width column positions
@@ -396,7 +399,7 @@ def generate_demo_records(date_from: str, date_to: str) -> list:
          "BROWN MICHAEL",   "ACME CONTR",     22000),
         ("PROBATE PROCEEDINGS, CERTIFIED COPY",       "probate",         "Probate",
          "DAVIS JAMES EST", "KAUFMAN PROB",       0),
-        ("STATE TAX LIEN",                            "lien",            "State Tax Lien",
+        ("STATE TAX LIEN",                            "lien",            "State TX",
          "HENDERSON BOB",   "STATE OF TX",     9800),
         ("ASSESSMENT LIEN BY HOMEOWNERS ASSOCIATION", "lien",            "HOA Lien",
          "RODRIGUEZ JUAN",  "FORNEY HOA",      5000),
@@ -473,6 +476,8 @@ def enrich_with_parcel(records: list, lookup: dict) -> list:
             rec.update(parcel)
             matched += 1
         else:
+            if owner and not is_entity(owner):
+                log.info(f"  NO MATCH: {owner}")
             rec.setdefault("prop_address", "")
             rec.setdefault("prop_city",    "")
             rec.setdefault("prop_state",   "TX")
