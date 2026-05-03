@@ -211,7 +211,6 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
     try:
         soup = BeautifulSoup(html, "html.parser")
 
-        # Results are in ul.selfServiceSearchResultList > li
         result_list = soup.find("ul", class_="selfServiceSearchResultList")
         if not result_list:
             log.warning(f"  {doc_type}: no selfServiceSearchResultList found")
@@ -222,10 +221,10 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
 
         seen = set()
         for item in items:
-            text = item.get_text(" ", strip=True)
+            full_text = item.get_text(" ", strip=True)
 
             # Instrument number
-            m = re.search(r"(\d{4}-\d+)", text)
+            m = re.search(r"(\d{4}-\d+)", full_text)
             if not m:
                 continue
             instrument = m.group(1)
@@ -235,50 +234,57 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
 
             # Recording date
             filed = ""
-            m2 = re.search(r"(\d{2}/\d{2}/\d{4})", text)
+            m2 = re.search(r"(\d{2}/\d{2}/\d{4})", full_text)
             if m2:
                 filed = m2.group(1)
 
-            # Grantor and grantee — look for ui-grid blocks
             grantor = ""
             grantee = ""
             legal   = ""
 
-            # Find all grid blocks in this item
-            blocks = item.find_all("div", class_=re.compile(r"ui-block-"))
-            for block in blocks:
-                block_text = block.get_text(" ", strip=True)
-                # Look for label spans/divs
-                label_el = block.find(class_=re.compile(r"ss-label|fieldLabel|label", re.I))
-                if not label_el:
-                    # Try first bold or strong
-                    label_el = block.find(["b", "strong", "span"])
-                label_text = label_el.get_text(strip=True).lower() if label_el else ""
+            # Find the ui-grid-b div which contains the data columns
+            grid = item.find("div", class_=re.compile(r"ui-grid-b"))
+            if grid:
+                blocks = grid.find_all("div", class_=re.compile(r"ui-block-"), recursive=False)
+                for block in blocks:
+                    # Get the label (first p or span with label class, or first line)
+                    label_el = block.find(["p", "span", "div"],
+                                         class_=re.compile(r"label|header|fieldLabel", re.I))
+                    block_lines = [l.strip() for l in block.get_text("\n").split("\n")
+                                   if l.strip()]
+                    if not block_lines:
+                        continue
 
-                if "grantor" in label_text:
-                    # Get text after the label
-                    grantor = block_text.replace(label_el.get_text(strip=True), "").strip() if label_el else block_text
-                elif "grantee" in label_text:
-                    grantee = block_text.replace(label_el.get_text(strip=True), "").strip() if label_el else block_text
-                elif "legal" in label_text:
-                    legal = block_text.replace(label_el.get_text(strip=True), "").strip() if label_el else block_text
+                    label_text = label_el.get_text(strip=True) if label_el else block_lines[0]
+                    # Value lines are everything after the label
+                    val_lines = block_lines[1:] if len(block_lines) > 1 else block_lines
 
-            # Fallback: use table cells or dl/dt/dd
+                    ll = label_text.lower()
+                    if "grantor" in ll:
+                        # Take only the first name (skip agent/attorney lines)
+                        grantor = val_lines[0] if val_lines else ""
+                    elif "grantee" in ll:
+                        grantee = val_lines[0] if val_lines else ""
+                    elif "legal" in ll:
+                        legal = " ".join(val_lines)
+
+            # Fallback if grid parsing didn't work
             if not grantor and not grantee:
-                # Try finding by header text pattern in the item
-                all_text = item.get_text("\n", strip=True)
-                lines = [l.strip() for l in all_text.split("\n") if l.strip()]
+                lines = [l.strip() for l in full_text.split("  ") if l.strip()]
                 for i, line in enumerate(lines):
-                    if line.lower().startswith("grantor") and i + 1 < len(lines):
-                        grantor = lines[i + 1]
-                    elif line.lower().startswith("grantee") and i + 1 < len(lines):
-                        grantee = lines[i + 1]
-                    elif line.lower().startswith("legal description") and i + 1 < len(lines):
-                        legal = lines[i + 1]
+                    ll = line.lower()
+                    if ll == "grantor" or ll.startswith("grantor ("):
+                        if i + 1 < len(lines):
+                            grantor = lines[i + 1]
+                    elif ll == "grantee" or ll.startswith("grantee ("):
+                        if i + 1 < len(lines):
+                            grantee = lines[i + 1]
+                    elif "legal description" in ll:
+                        if i + 1 < len(lines):
+                            legal = lines[i + 1]
 
             if debug and len(seen) <= 2:
-                log.info(f"  ITEM text: {text[:300]}")
-                log.info(f"  -> instrument={instrument} filed={filed} grantor={grantor} grantee={grantee}")
+                log.info(f"  ITEM: instr={instrument} grantor={grantor} grantee={grantee}")
 
             records.append({
                 "doc_num"  : instrument,
