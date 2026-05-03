@@ -205,52 +205,102 @@ def build_parcel_lookup() -> dict:
     return lookup
 
 
-def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str) -> list:
+def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
+                       debug: bool = False) -> list:
     records = []
     try:
         soup = BeautifulSoup(html, "html.parser")
+
+        if debug:
+            log.info(f"  DEBUG raw HTML: {html[:3000]}")
+
+        # Find all result cards — each has an instrument number
         cards = soup.find_all(
             lambda tag: tag.name in ["li", "div"] and
-            re.search(r"\d{4}-\d{4,}", tag.get_text())
+            re.search(r"\d{4}-\d{4,}", tag.get_text()) and
+            not any(child.name in ["li", "div"] and
+                    re.search(r"\d{4}-\d{4,}", child.get_text())
+                    for child in tag.find_all(["li", "div"], recursive=False))
         )
+
         log.info(f"  {doc_type}: {len(cards)} cards found in HTML")
         seen = set()
+
         for card in cards:
-            text  = card.get_text("\n", strip=True)
-            lines = [l.strip() for l in text.split("\n") if l.strip()]
             instrument = ""
             filed      = ""
             grantor    = ""
             grantee    = ""
             legal      = ""
-            for line in lines:
-                m = re.match(r"(\d{4}-\d+)", line)
-                if m and not instrument:
-                    instrument = m.group(1)
+
+            # Get instrument number from first line
+            full_text = card.get_text(" ", strip=True)
+            m = re.search(r"(\d{4}-\d+)", full_text)
+            if m:
+                instrument = m.group(1)
             if not instrument or instrument in seen:
                 continue
             seen.add(instrument)
-            for line in lines:
-                m = re.search(r"(\d{2}/\d{2}/\d{4})", line)
-                if m and not filed:
-                    filed = m.group(1)
-            for i, line in enumerate(lines):
-                if "Grantor" in line and i + 1 < len(lines):
-                    grantor = lines[i + 1]
-                if "Grantee" in line and i + 1 < len(lines):
-                    grantee = lines[i + 1]
-            for i, line in enumerate(lines):
-                if "Legal Description" in line and i + 1 < len(lines):
-                    legal = lines[i + 1]
+
+            # Get recording date
+            m2 = re.search(r"(\d{2}/\d{2}/\d{4})", full_text)
+            if m2:
+                filed = m2.group(1)
+
+            # Find labeled cells using BeautifulSoup structure
+            # Tyler Tech uses divs with class ui-block-a/b/c/d for columns
+            blocks = card.find_all(class_=re.compile(r"ui-block-"))
+            block_texts = [b.get_text(" ", strip=True) for b in blocks]
+
+            # Structure: col0=instrument+date, col1=grantor, col2=grantee, col3=legal
+            # But labels "Grantor", "Grantee", "Legal Description" appear in headers
+            # Find grantor block — contains "Grantor" label
+            for i, b in enumerate(blocks):
+                label = b.find(class_=re.compile(r"label|header|title", re.I))
+                label_text = label.get_text(strip=True) if label else ""
+                val_el = b.find(class_=re.compile(r"value|data|content", re.I))
+                val_text = val_el.get_text(" ", strip=True) if val_el else ""
+
+                if not val_text:
+                    # Try getting text after label
+                    full = b.get_text(" ", strip=True)
+                    if label_text and full.startswith(label_text):
+                        val_text = full[len(label_text):].strip()
+                    else:
+                        val_text = full
+
+                lc = label_text.lower()
+                if "grantor" in lc:
+                    grantor = val_text
+                elif "grantee" in lc:
+                    grantee = val_text
+                elif "legal" in lc:
+                    legal = val_text
+
+            # Fallback: parse from text if blocks didn't work
+            if not grantor and not grantee:
+                lines = [l.strip() for l in full_text.split("  ") if l.strip()]
+                for i, line in enumerate(lines):
+                    ll = line.lower()
+                    if ll.startswith("grantor") or ll == "grantor":
+                        if i + 1 < len(lines):
+                            grantor = lines[i + 1]
+                    elif ll.startswith("grantee") or ll == "grantee":
+                        if i + 1 < len(lines):
+                            grantee = lines[i + 1]
+                    elif ll.startswith("legal description"):
+                        if i + 1 < len(lines):
+                            legal = lines[i + 1]
+
             records.append({
                 "doc_num"  : instrument,
                 "doc_type" : doc_type,
                 "cat"      : cat,
                 "cat_label": cat_label,
                 "filed"    : parse_date(filed) or filed,
-                "grantor"  : grantor,
-                "grantee"  : grantee,
-                "legal"    : legal,
+                "grantor"  : grantor.strip(),
+                "grantee"  : grantee.strip(),
+                "legal"    : legal.strip(),
                 "amount"   : None,
                 "clerk_url": BASE_URL,
                 "_demo"    : False,
@@ -287,40 +337,34 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         },
         timeout=60
     ) as client:
-        # Step 1 — hit the search page (redirects to disclaimer)
         await client.get(BASE_URL)
-
-        # Step 2 — accept disclaimer
         await client.post(
             BASE_HOST + "/web/user/disclaimer",
             data={"disclaimer": "accept", "submit": "Accept"}
         )
-
-        # Step 3 — load search page to initialize proper search session
         r = await client.get(BASE_URL)
         log.info(f"  Search page loaded: {r.status_code} len={len(r.text)}")
         log.info(f"  Cookies: {list(client.cookies.keys())}")
 
         for doc_type, (cat, cat_label, holder_input) in DOC_TYPES.items():
             try:
-                # POST search — form-encoded exactly as browser does
                 form_data = {
-                    "field_BothNamesID-containsInput":              "Contains Any",
-                    "field_BothNamesID":                            "",
-                    "field_GrantorID-containsInput":                "Contains Any",
-                    "field_GrantorID":                              "",
-                    "field_GranteeID-containsInput":                "Contains Any",
-                    "field_GranteeID":                              "",
-                    "field_RecDateID_DOT_StartDate":                df,
-                    "field_RecDateID_DOT_EndDate":                  dt,
-                    "field_DocNumID":                               "",
-                    "field_BookVolPageID_DOT_Book":                 "",
-                    "field_BookVolPageID_DOT_Volume":               "",
-                    "field_BookVolPageID_DOT_Page":                 "",
-                    "field_selfservice_documentTypes-holderInput":  holder_input,
-                    "field_selfservice_documentTypes-holderValue":  doc_type,
-                    "field_selfservice_documentTypes-containsInput":"Contains Any",
-                    "field_selfservice_documentTypes":              "",
+                    "field_BothNamesID-containsInput":               "Contains Any",
+                    "field_BothNamesID":                             "",
+                    "field_GrantorID-containsInput":                 "Contains Any",
+                    "field_GrantorID":                               "",
+                    "field_GranteeID-containsInput":                 "Contains Any",
+                    "field_GranteeID":                               "",
+                    "field_RecDateID_DOT_StartDate":                 df,
+                    "field_RecDateID_DOT_EndDate":                   dt,
+                    "field_DocNumID":                                "",
+                    "field_BookVolPageID_DOT_Book":                  "",
+                    "field_BookVolPageID_DOT_Volume":                "",
+                    "field_BookVolPageID_DOT_Page":                  "",
+                    "field_selfservice_documentTypes-holderInput":   holder_input,
+                    "field_selfservice_documentTypes-holderValue":   doc_type,
+                    "field_selfservice_documentTypes-containsInput": "Contains Any",
+                    "field_selfservice_documentTypes":               "",
                 }
 
                 post_resp = await client.post(
@@ -332,13 +376,11 @@ async def scrape_all(date_from: str, date_to: str) -> list:
                     }
                 )
                 log.info(f"  {doc_type} POST: {post_resp.status_code} len={len(post_resp.text)}")
-                log.info(f"  POST snippet: {post_resp.text[:300]}")
 
-                # Check if we got JSON back
                 try:
-                    post_json = post_resp.json()
-                    total_pages = post_json.get("totalPages", 0)
-                    log.info(f"  {doc_type} totalPages={total_pages} keys={list(post_json.keys())}")
+                    post_json    = post_resp.json()
+                    total_pages  = post_json.get("totalPages", 0)
+                    log.info(f"  {doc_type} totalPages={total_pages}")
                 except Exception:
                     log.warning(f"  {doc_type} POST not JSON")
                     total_pages = 0
@@ -346,7 +388,6 @@ async def scrape_all(date_from: str, date_to: str) -> list:
                 if total_pages == 0:
                     continue
 
-                # GET results pages
                 for pg in range(1, total_pages + 1):
                     ts = int(datetime.now().timestamp() * 1000)
                     get_resp = await client.get(
@@ -355,8 +396,16 @@ async def scrape_all(date_from: str, date_to: str) -> list:
                         headers=ajax_headers
                     )
                     log.info(f"  {doc_type} GET p{pg}: {get_resp.status_code} len={len(get_resp.text)}")
+
+                    # Debug: log raw HTML for first page of LIS PENDENS only
+                    debug = (doc_type == "LIS PENDENS" and pg == 1)
+                    if debug:
+                        log.info(f"  LIS PENDENS raw HTML: {get_resp.text[:3000]}")
+
                     if get_resp.status_code == 200 and len(get_resp.text) > 500:
-                        recs = parse_results_html(get_resp.text, doc_type, cat, cat_label)
+                        recs = parse_results_html(
+                            get_resp.text, doc_type, cat, cat_label, debug=debug
+                        )
                         log.info(f"  {doc_type} p{pg}: {len(recs)} records parsed")
                         all_records.extend(recs)
 
