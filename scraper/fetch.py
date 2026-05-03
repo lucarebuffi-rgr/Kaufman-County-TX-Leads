@@ -559,7 +559,7 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
                 owner   = raw.get("grantor", "")
                 grantee = raw.get("grantee", "")
             if not owner:
-                continue
+                owner = f"UNKNOWN ({doc_num})"
             score, flags = score_record({**raw, "owner": owner})
             out_records.append({
                 "doc_num":      doc_num,
