@@ -34,21 +34,20 @@ BASE_HOST     = "https://kaufmancountytx-web.tylerhost.net"
 CAD_ZIP_URL   = "https://kaufman-cad.org/wp-content/uploads/2026/04/2026-Preliminary-Real-Roll-w-Improvement-Export.zip"
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "14"))
 
-# doc_type_name -> (cat, cat_label, holder_input_abbreviation)
 DOC_TYPES = {
-    "LIS PENDENS"                              : ("pre_foreclosure", "Lis Pendens",        "LP"),
-    "FEDERAL TAX LIEN"                         : ("lien",            "Federal Tax Lien",   "FTL"),
-    "STATE TAX LIEN"                           : ("lien",            "State Tax Lien",     "STL"),
+    "LIS PENDENS"                              : ("pre_foreclosure", "Lis Pendens",         "LP"),
+    "FEDERAL TAX LIEN"                         : ("lien",            "Federal Tax Lien",    "FTL"),
+    "STATE TAX LIEN"                           : ("lien",            "State Tax Lien",      "STL"),
     "ABSTRACT OF JUDGMENT"                     : ("judgment",        "Abstract of Judgment","AOJ"),
-    "JUDGMENT"                                 : ("judgment",        "Judgment",           "J"),
-    "PROBATE PROCEEDINGS, CERTIFIED COPY"      : ("probate",         "Probate",            "PP"),
+    "JUDGMENT"                                 : ("judgment",        "Judgment",            "J"),
+    "PROBATE PROCEEDINGS, CERTIFIED COPY"      : ("probate",         "Probate",             "PP"),
     "AFFIDAVIT OF HEIRSHIP"                    : ("probate",         "Affidavit of Heirship","AOH"),
-    "LIEN AFFIDAVIT/CLAIM/NOTICE"              : ("lien",            "Lien",               "LA"),
-    "HOSPITAL LIEN"                            : ("lien",            "Hospital Lien",      "HL"),
-    "CHILD SUPPORT LIEN"                       : ("lien",            "Child Support Lien", "CSL"),
-    "ASSESSMENT LIEN BY HOMEOWNERS ASSOCIATION": ("lien",            "HOA Lien",           "AL"),
-    "DIVORCE PROCEEDINGS, CERTIFIED COPY"      : ("other",           "Divorce Decree",     "DP"),
-    "MEDICAL LIEN"                             : ("lien",            "Medical Lien",       "ML"),
+    "LIEN AFFIDAVIT/CLAIM/NOTICE"              : ("lien",            "Lien",                "LA"),
+    "HOSPITAL LIEN"                            : ("lien",            "Hospital Lien",       "HL"),
+    "CHILD SUPPORT LIEN"                       : ("lien",            "Child Support Lien",  "CSL"),
+    "ASSESSMENT LIEN BY HOMEOWNERS ASSOCIATION": ("lien",            "HOA Lien",            "AL"),
+    "DIVORCE PROCEEDINGS, CERTIFIED COPY"      : ("other",           "Divorce Decree",      "DP"),
+    "MEDICAL LIEN"                             : ("lien",            "Medical Lien",        "ML"),
 }
 
 GRANTEE_IS_OWNER = {
@@ -84,7 +83,7 @@ PCLS_S,  PCLS_E  = 2731, 2741
 
 
 def parse_date(raw: str) -> Optional[str]:
-    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%Y%m%d", "%#m/%#d/%Y"):
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%Y%m%d"):
         try:
             return datetime.strptime(raw.strip(), fmt).strftime("%Y-%m-%d")
         except ValueError:
@@ -210,53 +209,39 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str) -> li
     records = []
     try:
         soup = BeautifulSoup(html, "html.parser")
-        # Each result is a list item or div with instrument number pattern
-        # Structure: instrument · B: OPR V: XXXX P: XXX · DOC TYPE
-        #            Recording Date | Grantor | Grantee | Legal Description
         cards = soup.find_all(
             lambda tag: tag.name in ["li", "div"] and
             re.search(r"\d{4}-\d{4,}", tag.get_text())
         )
         log.info(f"  {doc_type}: {len(cards)} cards found in HTML")
-
         seen = set()
         for card in cards:
-            text = card.get_text("\n", strip=True)
+            text  = card.get_text("\n", strip=True)
             lines = [l.strip() for l in text.split("\n") if l.strip()]
-
             instrument = ""
             filed      = ""
             grantor    = ""
             grantee    = ""
             legal      = ""
-
             for line in lines:
                 m = re.match(r"(\d{4}-\d+)", line)
                 if m and not instrument:
                     instrument = m.group(1)
-
             if not instrument or instrument in seen:
                 continue
             seen.add(instrument)
-
-            # Find recording date
             for line in lines:
                 m = re.search(r"(\d{2}/\d{2}/\d{4})", line)
                 if m and not filed:
                     filed = m.group(1)
-
-            # Find grantor/grantee by label
             for i, line in enumerate(lines):
                 if "Grantor" in line and i + 1 < len(lines):
                     grantor = lines[i + 1]
                 if "Grantee" in line and i + 1 < len(lines):
                     grantee = lines[i + 1]
-
-            # Find legal description
             for i, line in enumerate(lines):
                 if "Legal Description" in line and i + 1 < len(lines):
                     legal = lines[i + 1]
-
             records.append({
                 "doc_num"  : instrument,
                 "doc_type" : doc_type,
@@ -277,13 +262,20 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str) -> li
 
 async def scrape_all(date_from: str, date_to: str) -> list:
     all_records = []
-    # Convert date format from mm/dd/yyyy to m/d/yyyy (no leading zeros) to match site
+
     def fmt_date(d):
         dt = datetime.strptime(d, "%m/%d/%Y")
         return f"{dt.month}/{dt.day}/{dt.year}"
 
     df = fmt_date(date_from)
     dt = fmt_date(date_to)
+
+    ajax_headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Ajaxrequest":       "true",
+        "Accept":            "application/json, text/javascript, */*; q=0.01",
+        "Referer":           BASE_URL,
+    }
 
     async with httpx.AsyncClient(
         follow_redirects=True,
@@ -295,95 +287,78 @@ async def scrape_all(date_from: str, date_to: str) -> list:
         },
         timeout=60
     ) as client:
-        # Accept disclaimer
+        # Step 1 — hit the search page (redirects to disclaimer)
         await client.get(BASE_URL)
+
+        # Step 2 — accept disclaimer
         await client.post(
             BASE_HOST + "/web/user/disclaimer",
             data={"disclaimer": "accept", "submit": "Accept"}
         )
+
+        # Step 3 — load search page to initialize proper search session
+        r = await client.get(BASE_URL)
+        log.info(f"  Search page loaded: {r.status_code} len={len(r.text)}")
         log.info(f"  Cookies: {list(client.cookies.keys())}")
 
         for doc_type, (cat, cat_label, holder_input) in DOC_TYPES.items():
             try:
-                # POST search — form-encoded exactly as the browser does it
+                # POST search — form-encoded exactly as browser does
                 form_data = {
-                    "field_BothNamesID-containsInput": "Contains Any",
-                    "field_BothNamesID": "",
-                    "field_GrantorID-containsInput": "Contains Any",
-                    "field_GrantorID": "",
-                    "field_GranteeID-containsInput": "Contains Any",
-                    "field_GranteeID": "",
-                    "field_RecDateID_DOT_StartDate": df,
-                    "field_RecDateID_DOT_EndDate": dt,
-                    "field_DocNumID": "",
-                    "field_BookVolPageID_DOT_Book": "",
-                    "field_BookVolPageID_DOT_Volume": "",
-                    "field_BookVolPageID_DOT_Page": "",
-                    "field_selfservice_documentTypes-holderInput": holder_input,
-                    "field_selfservice_documentTypes-holderValue": doc_type,
-                    "field_selfservice_documentTypes-containsInput": "Contains Any",
-                    "field_selfservice_documentTypes": "",
+                    "field_BothNamesID-containsInput":              "Contains Any",
+                    "field_BothNamesID":                            "",
+                    "field_GrantorID-containsInput":                "Contains Any",
+                    "field_GrantorID":                              "",
+                    "field_GranteeID-containsInput":                "Contains Any",
+                    "field_GranteeID":                              "",
+                    "field_RecDateID_DOT_StartDate":                df,
+                    "field_RecDateID_DOT_EndDate":                  dt,
+                    "field_DocNumID":                               "",
+                    "field_BookVolPageID_DOT_Book":                 "",
+                    "field_BookVolPageID_DOT_Volume":               "",
+                    "field_BookVolPageID_DOT_Page":                 "",
+                    "field_selfservice_documentTypes-holderInput":  holder_input,
+                    "field_selfservice_documentTypes-holderValue":  doc_type,
+                    "field_selfservice_documentTypes-containsInput":"Contains Any",
+                    "field_selfservice_documentTypes":              "",
                 }
 
                 post_resp = await client.post(
                     BASE_HOST + "/web/searchPost/DOCSEARCH1008S7",
                     data=form_data,
                     headers={
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Ajaxrequest": "true",
-                        "Accept": "*/*",
-                        "Content-Type": "application/x-www-form-urlencoded",
+                        **ajax_headers,
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                     }
                 )
                 log.info(f"  {doc_type} POST: {post_resp.status_code} len={len(post_resp.text)}")
-                log.info(f"  POST snippet: {post_resp.text[:200]}")
+                log.info(f"  POST snippet: {post_resp.text[:300]}")
 
-                if post_resp.status_code != 200:
+                # Check if we got JSON back
+                try:
+                    post_json = post_resp.json()
+                    total_pages = post_json.get("totalPages", 0)
+                    log.info(f"  {doc_type} totalPages={total_pages} keys={list(post_json.keys())}")
+                except Exception:
+                    log.warning(f"  {doc_type} POST not JSON")
+                    total_pages = 0
+
+                if total_pages == 0:
                     continue
 
-                # GET results page 1
-                ts = int(datetime.now().timestamp() * 1000)
-                get_resp = await client.get(
-                    BASE_HOST + "/web/searchResults/DOCSEARCH1008S7",
-                    params={"page": "1", "_": str(ts)},
-                    headers={
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Ajaxrequest": "true",
-                        "Accept": "*/*",
-                        "Referer": BASE_URL,
-                    }
-                )
-                log.info(f"  {doc_type} GET: {get_resp.status_code} len={len(get_resp.text)}")
-                log.info(f"  GET snippet: {get_resp.text[:500]}")
-
-                if get_resp.status_code == 200 and len(get_resp.text) > 500:
-                    recs = parse_results_html(get_resp.text, doc_type, cat, cat_label)
-                    log.info(f"  {doc_type}: {len(recs)} records parsed")
-                    all_records.extend(recs)
-
-                    # Check for more pages
-                    total_match = re.search(r"(\d+)\s+Total Results", get_resp.text)
-                    if total_match:
-                        total = int(total_match.group(1))
-                        pages = (total + 24) // 25
-                        log.info(f"  {doc_type}: {total} total results, {pages} pages")
-                        for pg in range(2, pages + 1):
-                            ts2 = int(datetime.now().timestamp() * 1000)
-                            pg_resp = await client.get(
-                                BASE_HOST + "/web/searchResults/DOCSEARCH1008S7",
-                                params={"page": str(pg), "_": str(ts2)},
-                                headers={
-                                    "X-Requested-With": "XMLHttpRequest",
-                                    "Ajaxrequest": "true",
-                                    "Accept": "*/*",
-                                    "Referer": BASE_URL,
-                                }
-                            )
-                            if pg_resp.status_code == 200:
-                                recs = parse_results_html(
-                                    pg_resp.text, doc_type, cat, cat_label
-                                )
-                                all_records.extend(recs)
+                # GET results pages
+                for pg in range(1, total_pages + 1):
+                    ts = int(datetime.now().timestamp() * 1000)
+                    get_resp = await client.get(
+                        BASE_HOST + "/web/searchResults/DOCSEARCH1008S7",
+                        params={"page": str(pg), "_": str(ts)},
+                        headers=ajax_headers
+                    )
+                    log.info(f"  {doc_type} GET p{pg}: {get_resp.status_code} len={len(get_resp.text)}")
+                    if get_resp.status_code == 200 and len(get_resp.text) > 500:
+                        recs = parse_results_html(get_resp.text, doc_type, cat, cat_label)
+                        log.info(f"  {doc_type} p{pg}: {len(recs)} records parsed")
+                        all_records.extend(recs)
 
             except Exception as e:
                 log.warning(f"  {doc_type} failed: {e}\n{traceback.format_exc()}")
