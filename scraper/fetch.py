@@ -211,86 +211,74 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
     try:
         soup = BeautifulSoup(html, "html.parser")
 
-        if debug:
-            log.info(f"  DEBUG raw HTML: {html[:3000]}")
+        # Results are in ul.selfServiceSearchResultList > li
+        result_list = soup.find("ul", class_="selfServiceSearchResultList")
+        if not result_list:
+            log.warning(f"  {doc_type}: no selfServiceSearchResultList found")
+            return records
 
-        # Find all result cards — each has an instrument number
-        cards = soup.find_all(
-            lambda tag: tag.name in ["li", "div"] and
-            re.search(r"\d{4}-\d{4,}", tag.get_text()) and
-            not any(child.name in ["li", "div"] and
-                    re.search(r"\d{4}-\d{4,}", child.get_text())
-                    for child in tag.find_all(["li", "div"], recursive=False))
-        )
+        items = result_list.find_all("li", recursive=False)
+        log.info(f"  {doc_type}: {len(items)} result li items found")
 
-        log.info(f"  {doc_type}: {len(cards)} cards found in HTML")
         seen = set()
+        for item in items:
+            text = item.get_text(" ", strip=True)
 
-        for card in cards:
-            instrument = ""
-            filed      = ""
-            grantor    = ""
-            grantee    = ""
-            legal      = ""
-
-            # Get instrument number from first line
-            full_text = card.get_text(" ", strip=True)
-            m = re.search(r"(\d{4}-\d+)", full_text)
-            if m:
-                instrument = m.group(1)
-            if not instrument or instrument in seen:
+            # Instrument number
+            m = re.search(r"(\d{4}-\d+)", text)
+            if not m:
+                continue
+            instrument = m.group(1)
+            if instrument in seen:
                 continue
             seen.add(instrument)
 
-            # Get recording date
-            m2 = re.search(r"(\d{2}/\d{2}/\d{4})", full_text)
+            # Recording date
+            filed = ""
+            m2 = re.search(r"(\d{2}/\d{2}/\d{4})", text)
             if m2:
                 filed = m2.group(1)
 
-            # Find labeled cells using BeautifulSoup structure
-            # Tyler Tech uses divs with class ui-block-a/b/c/d for columns
-            blocks = card.find_all(class_=re.compile(r"ui-block-"))
-            block_texts = [b.get_text(" ", strip=True) for b in blocks]
+            # Grantor and grantee — look for ui-grid blocks
+            grantor = ""
+            grantee = ""
+            legal   = ""
 
-            # Structure: col0=instrument+date, col1=grantor, col2=grantee, col3=legal
-            # But labels "Grantor", "Grantee", "Legal Description" appear in headers
-            # Find grantor block — contains "Grantor" label
-            for i, b in enumerate(blocks):
-                label = b.find(class_=re.compile(r"label|header|title", re.I))
-                label_text = label.get_text(strip=True) if label else ""
-                val_el = b.find(class_=re.compile(r"value|data|content", re.I))
-                val_text = val_el.get_text(" ", strip=True) if val_el else ""
+            # Find all grid blocks in this item
+            blocks = item.find_all("div", class_=re.compile(r"ui-block-"))
+            for block in blocks:
+                block_text = block.get_text(" ", strip=True)
+                # Look for label spans/divs
+                label_el = block.find(class_=re.compile(r"ss-label|fieldLabel|label", re.I))
+                if not label_el:
+                    # Try first bold or strong
+                    label_el = block.find(["b", "strong", "span"])
+                label_text = label_el.get_text(strip=True).lower() if label_el else ""
 
-                if not val_text:
-                    # Try getting text after label
-                    full = b.get_text(" ", strip=True)
-                    if label_text and full.startswith(label_text):
-                        val_text = full[len(label_text):].strip()
-                    else:
-                        val_text = full
+                if "grantor" in label_text:
+                    # Get text after the label
+                    grantor = block_text.replace(label_el.get_text(strip=True), "").strip() if label_el else block_text
+                elif "grantee" in label_text:
+                    grantee = block_text.replace(label_el.get_text(strip=True), "").strip() if label_el else block_text
+                elif "legal" in label_text:
+                    legal = block_text.replace(label_el.get_text(strip=True), "").strip() if label_el else block_text
 
-                lc = label_text.lower()
-                if "grantor" in lc:
-                    grantor = val_text
-                elif "grantee" in lc:
-                    grantee = val_text
-                elif "legal" in lc:
-                    legal = val_text
-
-            # Fallback: parse from text if blocks didn't work
+            # Fallback: use table cells or dl/dt/dd
             if not grantor and not grantee:
-                lines = [l.strip() for l in full_text.split("  ") if l.strip()]
+                # Try finding by header text pattern in the item
+                all_text = item.get_text("\n", strip=True)
+                lines = [l.strip() for l in all_text.split("\n") if l.strip()]
                 for i, line in enumerate(lines):
-                    ll = line.lower()
-                    if ll.startswith("grantor") or ll == "grantor":
-                        if i + 1 < len(lines):
-                            grantor = lines[i + 1]
-                    elif ll.startswith("grantee") or ll == "grantee":
-                        if i + 1 < len(lines):
-                            grantee = lines[i + 1]
-                    elif ll.startswith("legal description"):
-                        if i + 1 < len(lines):
-                            legal = lines[i + 1]
+                    if line.lower().startswith("grantor") and i + 1 < len(lines):
+                        grantor = lines[i + 1]
+                    elif line.lower().startswith("grantee") and i + 1 < len(lines):
+                        grantee = lines[i + 1]
+                    elif line.lower().startswith("legal description") and i + 1 < len(lines):
+                        legal = lines[i + 1]
+
+            if debug and len(seen) <= 2:
+                log.info(f"  ITEM text: {text[:300]}")
+                log.info(f"  -> instrument={instrument} filed={filed} grantor={grantor} grantee={grantee}")
 
             records.append({
                 "doc_num"  : instrument,
