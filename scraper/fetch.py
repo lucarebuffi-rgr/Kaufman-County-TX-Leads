@@ -180,8 +180,7 @@ def build_parcel_lookup() -> dict:
             mail_city  = line[CITY_S:CITY_E].strip()
             mail_state = line[STAT_S:STAT_E].strip() or "TX"
             mail_zip   = line[ZIP_S:ZIP_E].strip()[:5]
-            situs_num  = line[SNUM_S:SNUM_E].strip() if len(line) > SNUM_E else ""
-            situs_st   = f"{situs_num} {line[SITUS_S:SITUS_E].strip()}".strip()
+            situs_st   = line[SITUS_S:SITUS_E].strip()
             situs_city = line[SCITY_S:SCITY_E].strip()
             situs_zip  = line[SZIP_S:SZIP_E].strip()[:5]
             parcel = {
