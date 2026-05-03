@@ -284,7 +284,7 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
                             legal = lines[i + 1]
 
             if debug and len(seen) <= 2:
-                log.info(f"  ITEM: instr={instrument} grantor={grantor} grantee={grantee}")
+                        log.info(f"  ITEM HTML: {str(item)[:1000]}")
 
             records.append({
                 "doc_num"  : instrument,
