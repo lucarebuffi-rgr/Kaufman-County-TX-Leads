@@ -572,6 +572,8 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
     out_records = [r for r in out_records if not any(
         x in (r.get("owner", "")).upper() for x in ENTITY_FILTERS
     )]
+    out_records = [r for r in out_records if r.get("prop_address") or r.get("mail_address")]
+    )]
     out_records.sort(key=lambda r: (-r["score"], r.get("filed", "") or ""))
     with_address = sum(1 for r in out_records if r["prop_address"] or r["mail_address"])
     return {
