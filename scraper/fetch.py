@@ -278,8 +278,8 @@ def parse_results_html(html: str, doc_type: str, cat: str, cat_label: str,
                         if i + 1 < len(lines):
                             legal = lines[i + 1]
 
-            if debug and len(seen) <= 2:
-                        log.info(f"  ITEM HTML: {str(item)[:1000]}")
+            if debug and len(seen) <= 1:
+                        log.info(f"  ITEM HTML: {str(item)[:5000]}")
 
             records.append({
                 "doc_num"  : instrument,
