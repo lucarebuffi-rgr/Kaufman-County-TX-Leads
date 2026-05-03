@@ -74,7 +74,6 @@ ENTITY_FILTERS = (
     "UNITED WHOLESALE", "PENNYMAC", "FREEDOM MORTGAGE",
 )
 
-# CAD fixed-width column positions
 ACCT_S,  ACCT_E  = 596,  608
 NAME_S,  NAME_E  = 608,  658
 ADDR_S,  ADDR_E  = 753,  803
@@ -401,7 +400,7 @@ def generate_demo_records(date_from: str, date_to: str) -> list:
          "BROWN MICHAEL",   "ACME CONTR",     22000),
         ("PROBATE PROCEEDINGS, CERTIFIED COPY",       "probate",         "Probate",
          "DAVIS JAMES EST", "KAUFMAN PROB",       0),
-        ("STATE TAX LIEN",                            "lien",            "State TX",
+        ("STATE TAX LIEN",                            "lien",            "State Tax Lien",
          "HENDERSON BOB",   "STATE OF TX",     9800),
         ("ASSESSMENT LIEN BY HOMEOWNERS ASSOCIATION", "lien",            "HOA Lien",
          "RODRIGUEZ JUAN",  "FORNEY HOA",      5000),
@@ -575,7 +574,6 @@ def build_output(raw_records: list, date_from: str, date_to: str) -> dict:
         x in (r.get("owner", "")).upper() for x in ENTITY_FILTERS
     )]
     out_records = [r for r in out_records if r.get("prop_address") or r.get("mail_address")]
-    )]
     out_records.sort(key=lambda r: (-r["score"], r.get("filed", "") or ""))
     with_address = sum(1 for r in out_records if r["prop_address"] or r["mail_address"])
     return {
